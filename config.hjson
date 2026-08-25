@@ -1,0 +1,9 @@
+{
+  token: "YOUR_TOKEN_HERE"
+  sourceChannel: "SOURCE_CHANNEL_ID"
+  destinationChannel: "DESTINATION_CHANNEL_ID"
+  delayInterval: 60
+  readMessages: 20
+  messageMustInclude: ""
+  messageAnyIncludes: []
+}
