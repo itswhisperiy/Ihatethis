@@ -1,6 +1,6 @@
 {
   selfbotToken: "YOUR_USER_ACCOUNT_TOKEN_HERE"
-  botToken: "YOUR_BOT_TOKEN_HERE"
+  botToken: "MTU0MjE0NTg0MjIzNDc4OTk3OA.GqepzJ.QcJlmEXlPX7Z0ICtDfyajWAJLCxNgFSjy9wLqM"
 
   channels: [
     {
