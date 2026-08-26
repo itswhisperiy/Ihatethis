@@ -68,31 +68,31 @@ function reconstructComponents(components, sourceMsgId, sourceChId) {
   });
 }
 
-// ========== Emoji resolver ==========
-function resolveEmojis(text) {
+// ========== Emoji resolver (destination-guild only) ==========
+function resolveEmojis(text, guild) {
   if (!text || typeof text !== 'string') return text;
-  // Match :emoji_name: but NOT URLs or code blocks
+  const cache = guild ? guild.emojis.cache : bot.emojis.cache;
   return text.replace(/:([a-zA-Z0-9_]+):/g, (match, name) => {
-    const emoji = bot.emojis.cache.find(e => e.name === name);
+    const emoji = cache.find(e => e.name === name);
     if (emoji) {
       return emoji.animated ? `<a:${emoji.name}:${emoji.id}>` : `<:${emoji.name}:${emoji.id}>`;
     }
-    return match; // keep original if not found
+    return match; // keep original if not found in destination guild
   });
 }
 
-function resolveEmbedEmojis(embed) {
+function resolveEmbedEmojis(embed, guild) {
   if (!embed) return embed;
   const resolved = { ...embed };
-  if (resolved.title) resolved.title = resolveEmojis(resolved.title);
-  if (resolved.description) resolved.description = resolveEmojis(resolved.description);
-  if (resolved.footer?.text) resolved.footer.text = resolveEmojis(resolved.footer.text);
-  if (resolved.author?.name) resolved.author.name = resolveEmojis(resolved.author.name);
+  if (resolved.title) resolved.title = resolveEmojis(resolved.title, guild);
+  if (resolved.description) resolved.description = resolveEmojis(resolved.description, guild);
+  if (resolved.footer?.text) resolved.footer.text = resolveEmojis(resolved.footer.text, guild);
+  if (resolved.author?.name) resolved.author.name = resolveEmojis(resolved.author.name, guild);
   if (Array.isArray(resolved.fields)) {
     resolved.fields = resolved.fields.map(f => ({
       ...f,
-      name: resolveEmojis(f.name),
-      value: resolveEmojis(f.value),
+      name: resolveEmojis(f.name, guild),
+      value: resolveEmojis(f.value, guild),
     }));
   }
   return resolved;
@@ -117,12 +117,13 @@ const server = http.createServer(async (req, res) => {
       try {
         const data = JSON.parse(body);
         const destChannel = await bot.channels.fetch(data.destination);
+        const guild = destChannel.guild || null;
         const components = reconstructComponents(data.components, data.sourceId, data.sourceChannelId);
 
-        // Resolve emojis in content and embeds
-        const resolvedContent = resolveEmojis(data.content);
+        // Resolve emojis using DESTINATION guild only
+        const resolvedContent = resolveEmojis(data.content, guild);
         const resolvedEmbeds = data.embeds?.length
-          ? data.embeds.map(e => resolveEmbedEmojis(e))
+          ? data.embeds.map(e => resolveEmbedEmojis(e, guild))
           : undefined;
 
         const payload = {
@@ -155,10 +156,11 @@ const server = http.createServer(async (req, res) => {
         const data = JSON.parse(body);
         const destChannel = await bot.channels.fetch(data.destination);
         const destMsg = await destChannel.messages.fetch(data.destMessageId);
+        const guild = destChannel.guild || null;
 
-        // Resolve emojis in updated embeds
+        // Resolve emojis using DESTINATION guild only
         const resolvedEmbeds = data.embeds?.length
-          ? data.embeds.map(e => resolveEmbedEmojis(e))
+          ? data.embeds.map(e => resolveEmbedEmojis(e, guild))
           : undefined;
 
         const editPayload = {
