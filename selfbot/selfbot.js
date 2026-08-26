@@ -10,7 +10,7 @@ const DELAY = Number(config.delayInterval) || 60;
 const LIMIT = Number(config.readMessages) || 20;
 const MUST = config.messageMustInclude || "";
 const ANY = Array.isArray(config.messageAnyIncludes) ? config.messageAnyIncludes.filter(Boolean) : [];
-const BOT_URL = "http://127.0.0.1:3001";
+const BOT_URL = (config.botUrl || "http://127.0.0.1:3001").trim();
 
 if (!TOKEN || CHANNELS.length === 0) {
   console.error("[Selfbot] Missing token or channels in config.hjson");
@@ -156,7 +156,6 @@ async function checkAll() {
 client.on('messageUpdate', async (oldMessage, newMessage) => {
   if (!ready) return;
   if (!newMessage.guild) return;
-  // FIX: only skip our OWN edits, not bot embed updates
   if (newMessage.author?.id === client.user.id) return;
   const pair = sourceToPair[newMessage.channelId];
   if (!pair) return;
@@ -177,6 +176,29 @@ client.on('messageUpdate', async (oldMessage, newMessage) => {
     console.log(`âœï¸ EDIT ${newMessage.channelId} â†’ ${pair.destination}`);
   } catch (err) {
     console.error("[Selfbot] Edit forward failed:", err.message);
+  }
+});
+
+// ========== Delete tracking ==========
+client.on('messageDelete', async (message) => {
+  if (!ready) return;
+  if (!message.guild) return;
+  const pair = sourceToPair[message.channelId];
+  if (!pair) return;
+
+  const destMsgId = msgMap[message.id];
+  if (!destMsgId) return;
+
+  try {
+    await axios.post(`${BOT_URL}/delete`, {
+      destination: pair.destination,
+      destMessageId: destMsgId,
+    }, { timeout: 15000 });
+    delete msgMap[message.id];
+    saveMap(msgMap);
+    console.log(`ðŸ—‘ï¸ DELETE ${message.channelId} â†’ ${pair.destination}`);
+  } catch (err) {
+    console.error("[Selfbot] Delete forward failed:", err.message);
   }
 });
 
@@ -238,12 +260,9 @@ async function clickSourceButton(sourceChId, sourceMsgId, customId) {
       if (m.id === sourceMsgId) return;
 
       const text = (m.content || "").trim();
-      console.log(`[Selfbot Debug] msgCreate: author=${m.author?.tag || "?"}, bot=${m.author?.bot}, text="${text.substring(0, 80)}", embeds=${m.embeds?.length || 0}`);
-
       collectedMessages.push(m);
 
       if (text.length > 0 && text.length < 300 && (!m.embeds || m.embeds.length === 0)) {
-        console.log(`[Selfbot Debug] Resolved with key: ${text}`);
         doResolve({ success: true, text: text, embeds: [] });
       }
     }
@@ -258,8 +277,6 @@ async function clickSourceButton(sourceChId, sourceMsgId, customId) {
     client.on('messageUpdate', onUpdate);
 
     const timeout = setTimeout(() => {
-      console.log(`[Selfbot Debug] Timeout. Collected ${collectedMessages.length} messages.`);
-
       const candidates = collectedMessages.filter(m => {
         const text = (m.content || "").trim();
         return m.id !== sourceMsgId && (text.length > 0 || (m.embeds && m.embeds.length > 0));
@@ -275,7 +292,6 @@ async function clickSourceButton(sourceChId, sourceMsgId, customId) {
           for (const m of cacheRecent.values()) {
             const text = (m.content || "").trim();
             if (text.length > 0 && text.length < 300 && (!m.embeds || m.embeds.length === 0)) {
-              console.log(`[Selfbot Debug] Resolved from cache: ${text}`);
               doResolve({ success: true, text: text, embeds: [] });
               return;
             }
