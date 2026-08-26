@@ -68,6 +68,36 @@ function reconstructComponents(components, sourceMsgId, sourceChId) {
   });
 }
 
+// ========== Emoji resolver ==========
+function resolveEmojis(text) {
+  if (!text || typeof text !== 'string') return text;
+  // Match :emoji_name: but NOT URLs or code blocks
+  return text.replace(/:([a-zA-Z0-9_]+):/g, (match, name) => {
+    const emoji = bot.emojis.cache.find(e => e.name === name);
+    if (emoji) {
+      return emoji.animated ? `<a:${emoji.name}:${emoji.id}>` : `<:${emoji.name}:${emoji.id}>`;
+    }
+    return match; // keep original if not found
+  });
+}
+
+function resolveEmbedEmojis(embed) {
+  if (!embed) return embed;
+  const resolved = { ...embed };
+  if (resolved.title) resolved.title = resolveEmojis(resolved.title);
+  if (resolved.description) resolved.description = resolveEmojis(resolved.description);
+  if (resolved.footer?.text) resolved.footer.text = resolveEmojis(resolved.footer.text);
+  if (resolved.author?.name) resolved.author.name = resolveEmojis(resolved.author.name);
+  if (Array.isArray(resolved.fields)) {
+    resolved.fields = resolved.fields.map(f => ({
+      ...f,
+      name: resolveEmojis(f.name),
+      value: resolveEmojis(f.value),
+    }));
+  }
+  return resolved;
+}
+
 bot.on('ready', () => {
   console.log(`[Bot] Logged in as ${bot.user.tag}`);
 });
@@ -88,9 +118,16 @@ const server = http.createServer(async (req, res) => {
         const data = JSON.parse(body);
         const destChannel = await bot.channels.fetch(data.destination);
         const components = reconstructComponents(data.components, data.sourceId, data.sourceChannelId);
+
+        // Resolve emojis in content and embeds
+        const resolvedContent = resolveEmojis(data.content);
+        const resolvedEmbeds = data.embeds?.length
+          ? data.embeds.map(e => resolveEmbedEmojis(e))
+          : undefined;
+
         const payload = {
-          content: data.content || undefined,
-          embeds: data.embeds?.length ? data.embeds : undefined,
+          content: resolvedContent || undefined,
+          embeds: resolvedEmbeds,
           components: components?.length ? components : undefined,
           files: data.attachments?.length ? data.attachments : undefined,
         };
@@ -119,9 +156,14 @@ const server = http.createServer(async (req, res) => {
         const destChannel = await bot.channels.fetch(data.destination);
         const destMsg = await destChannel.messages.fetch(data.destMessageId);
 
+        // Resolve emojis in updated embeds
+        const resolvedEmbeds = data.embeds?.length
+          ? data.embeds.map(e => resolveEmbedEmojis(e))
+          : undefined;
+
         const editPayload = {
           content: data.content || undefined,
-          embeds: data.embeds?.length ? data.embeds : undefined,
+          embeds: resolvedEmbeds,
         };
         if (destMsg.components?.length) {
           editPayload.components = destMsg.components;
