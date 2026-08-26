@@ -17,6 +17,7 @@ const bot = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildEmojis,
   ],
 });
 
@@ -68,57 +69,94 @@ function reconstructComponents(components, sourceMsgId, sourceChId) {
   });
 }
 
-// ========== Emoji resolver ==========
-function findEmoji(name, guild) {
+// ========== Emoji resolver (async, force-fetches if cache empty) ==========
+async function findEmoji(name, guild) {
   if (!guild) return null;
-  // Exact match
+
+  // Try cache first
   let emoji = guild.emojis.cache.find(e => e.name === name);
+  if (!emoji) {
+    emoji = guild.emojis.cache.find(e => e.name.toLowerCase() === name.toLowerCase());
+  }
   if (emoji) return emoji;
-  // Case-insensitive
-  emoji = guild.emojis.cache.find(e => e.name.toLowerCase() === name.toLowerCase());
-  return emoji || null;
+
+  // Cache empty or emoji not found â€” force fetch
+  if (guild.emojis.cache.size === 0 || !emoji) {
+    try {
+      await guild.emojis.fetch();
+      emoji = guild.emojis.cache.find(e => e.name === name);
+      if (!emoji) {
+        emoji = guild.emojis.cache.find(e => e.name.toLowerCase() === name.toLowerCase());
+      }
+      if (emoji) return emoji;
+    } catch (e) {
+      console.error(`[Bot] Failed to fetch emojis for ${guild.name}:`, e.message);
+    }
+  }
+
+  // Fallback: search ALL guilds the bot is in
+  for (const g of bot.guilds.cache.values()) {
+    if (g.id === guild.id) continue;
+    let e = g.emojis.cache.find(e => e.name === name);
+    if (!e) e = g.emojis.cache.find(e => e.name.toLowerCase() === name.toLowerCase());
+    if (e) {
+      console.log(`[Bot Emoji] Found "${name}" in fallback guild "${g.name}"`);
+      return e;
+    }
+  }
+
+  return null;
 }
 
-function resolveEmojis(text, guild) {
+async function resolveEmojis(text, guild) {
   if (!text || typeof text !== 'string') return text;
 
-  // 1. Replace existing Discord emoji mentions from source server with destination equivalents
-  //    <:name:old_id>  ->  <:name:new_id>
-  //    <a:name:old_id> ->  <a:name:new_id>
-  let resolved = text.replace(/<(a?):(\w+):(\d+)>/g, (match, animated, name, oldId) => {
-    const emoji = findEmoji(name, guild);
+  // Replace existing Discord emoji mentions from source server with destination equivalents
+  let resolved = text;
+  const mentionRegex = /<(a?):(\w+):(\d+)>/g;
+  let match;
+  while ((match = mentionRegex.exec(text)) !== null) {
+    const [full, animated, name, oldId] = match;
+    const emoji = await findEmoji(name, guild);
     if (emoji) {
-      return emoji.animated ? `<a:${emoji.name}:${emoji.id}>` : `<:${emoji.name}:${emoji.id}>`;
+      const replacement = emoji.animated ? `<a:${emoji.name}:${emoji.id}>` : `<:${emoji.name}:${emoji.id}>`;
+      resolved = resolved.replace(full, replacement);
+    } else {
+      // No matching emoji â€” strip the broken mention, keep just the name
+      resolved = resolved.replace(full, `:${name}:`);
     }
-    // If no matching emoji in destination, strip the mention to just the name
-    return `:${name}:`;
-  });
+  }
 
-  // 2. Replace bare :name: patterns (fallback for plain text names)
-  resolved = resolved.replace(/:([a-zA-Z0-9_]+):/g, (match, name) => {
-    const emoji = findEmoji(name, guild);
-    if (emoji) {
-      return emoji.animated ? `<a:${emoji.name}:${emoji.id}>` : `<:${emoji.name}:${emoji.id}>`;
+  // Also handle bare :name: patterns (fallback)
+  const bareRegex = /:([a-zA-Z0-9_]+):/g;
+  while ((match = bareRegex.exec(text)) !== null) {
+    const [full, name] = match;
+    // Skip if already replaced above or if it's a standard Discord timestamp
+    if (resolved.includes(full)) {
+      const emoji = await findEmoji(name, guild);
+      if (emoji) {
+        const replacement = emoji.animated ? `<a:${emoji.name}:${emoji.id}>` : `<:${emoji.name}:${emoji.id}>`;
+        resolved = resolved.replace(full, replacement);
+      }
     }
-    return match;
-  });
+  }
 
   return resolved;
 }
 
-function resolveEmbedEmojis(embed, guild) {
+async function resolveEmbedEmojis(embed, guild) {
   if (!embed) return embed;
   const resolved = { ...embed };
-  if (resolved.title) resolved.title = resolveEmojis(resolved.title, guild);
-  if (resolved.description) resolved.description = resolveEmojis(resolved.description, guild);
-  if (resolved.footer?.text) resolved.footer.text = resolveEmojis(resolved.footer.text, guild);
-  if (resolved.author?.name) resolved.author.name = resolveEmojis(resolved.author.name, guild);
+  if (resolved.title) resolved.title = await resolveEmojis(resolved.title, guild);
+  if (resolved.description) resolved.description = await resolveEmojis(resolved.description, guild);
+  if (resolved.footer?.text) resolved.footer.text = await resolveEmojis(resolved.footer.text, guild);
+  if (resolved.author?.name) resolved.author.name = await resolveEmojis(resolved.author.name, guild);
   if (Array.isArray(resolved.fields)) {
-    resolved.fields = resolved.fields.map(f => ({
+    resolved.fields = await Promise.all(resolved.fields.map(async f => ({
       ...f,
-      name: resolveEmojis(f.name, guild),
-      value: resolveEmojis(f.value, guild),
-    }));
+      name: await resolveEmojis(f.name, guild),
+      value: await resolveEmojis(f.value, guild),
+    })));
   }
   return resolved;
 }
@@ -145,9 +183,9 @@ const server = http.createServer(async (req, res) => {
         const guild = destChannel.guild || null;
         const components = reconstructComponents(data.components, data.sourceId, data.sourceChannelId);
 
-        const resolvedContent = resolveEmojis(data.content, guild);
+        const resolvedContent = await resolveEmojis(data.content, guild);
         const resolvedEmbeds = data.embeds?.length
-          ? data.embeds.map(e => resolveEmbedEmojis(e, guild))
+          ? await Promise.all(data.embeds.map(e => resolveEmbedEmojis(e, guild)))
           : undefined;
 
         const payload = {
@@ -183,7 +221,7 @@ const server = http.createServer(async (req, res) => {
         const guild = destChannel.guild || null;
 
         const resolvedEmbeds = data.embeds?.length
-          ? data.embeds.map(e => resolveEmbedEmojis(e, guild))
+          ? await Promise.all(data.embeds.map(e => resolveEmbedEmojis(e, guild)))
           : undefined;
 
         const editPayload = {
