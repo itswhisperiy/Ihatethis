@@ -1,0 +1,10 @@
+{
+  "name": "echo-bot",
+  "version": "1.0.0",
+  "main": "bot.js",
+  "dependencies": {
+    "discord.js": "^14.16.0",
+    "axios": "^1.7.0",
+    "hjson": "^3.2.2"
+  }
+}
