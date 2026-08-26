@@ -1,5 +1,5 @@
 {
-  token: "YOUR_TOKEN_HERE"
+  token: "MTMwNzk1NzcwNzcxMzgwNjM1Nw.GxydJf.r3yb-DPYbc0Y_t_CF95ofS68ctjcccJDqnW7fE"
   sourceChannel: "SOURCE_CHANNEL_ID"
   destinationChannel: "DESTINATION_CHANNEL_ID"
   delayInterval: 60
