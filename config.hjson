@@ -20,8 +20,8 @@
     }
   ]
 
-  delayInterval: 10
-  readMessages: 30
+  delayInterval: 5
+  readMessages: 10
   messageMustInclude: ""
   messageAnyIncludes: []
 }
