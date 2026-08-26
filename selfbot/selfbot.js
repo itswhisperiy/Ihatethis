@@ -215,6 +215,112 @@ server.listen(3002, () => {
 // ========== Click button in source ==========
 async function clickSourceButton(sourceChId, sourceMsgId, customId) {
   return new Promise(async (resolve) => {
+    let resolved = false;
+    const collectedMessages = [];
+    let editedMessage = null;
+
+    function doResolve(data) {
+      if (resolved) return;
+      resolved = true;
+      cleanup();
+      resolve(data);
+    }
+
+    function cleanup() {
+      client.off('messageCreate', onMessage);
+      client.off('messageUpdate', onUpdate);
+      clearTimeout(timeout);
+    }
+
+    // Listen for ANY new message in the channel (ephemeral keys might not have bot flag)
+    function onMessage(m) {
+      if (m.channelId !== sourceChId) return;
+      if (m.id === sourceMsgId) return;
+
+      const text = (m.content || "").trim();
+      console.log(`[Selfbot Debug] msgCreate: author=${m.author?.tag || "?"}, bot=${m.author?.bot}, text="${text.substring(0, 80)}", embeds=${m.embeds?.length || 0}`);
+
+      collectedMessages.push(m);
+
+      // Keys are short plain text â€” resolve immediately when we see one
+      if (text.length > 0 && text.length < 300 && (!m.embeds || m.embeds.length === 0)) {
+        console.log(`[Selfbot Debug] Resolved with key: ${text}`);
+        doResolve({ success: true, text: text, embeds: [] });
+      }
+    }
+
+    function onUpdate(oldMsg, newMsg) {
+      if (newMsg.id === sourceMsgId) {
+        editedMessage = newMsg;
+      }
+    }
+
+    // SET UP LISTENERS BEFORE CLICKING â€” critical fix
+    client.on('messageCreate', onMessage);
+    client.on('messageUpdate', onUpdate);
+
+    // Timeout fallback
+    const timeout = setTimeout(() => {
+      console.log(`[Selfbot Debug] Timeout. Collected ${collectedMessages.length} messages.`);
+
+      const candidates = collectedMessages.filter(m => {
+        const text = (m.content || "").trim();
+        return m.id !== sourceMsgId && (text.length > 0 || (m.embeds && m.embeds.length > 0));
+      });
+
+      // Try cache as last resort
+      if (candidates.length === 0) {
+        const channel = client.channels.cache.get(sourceChId);
+        if (channel) {
+          const cacheRecent = channel.messages.cache.filter(m =>
+            m.id !== sourceMsgId &&
+            m.createdTimestamp > Date.now() - 20000
+          );
+          for (const m of cacheRecent.values()) {
+            const text = (m.content || "").trim();
+            if (text.length > 0 && text.length < 300 && (!m.embeds || m.embeds.length === 0)) {
+              console.log(`[Selfbot Debug] Resolved from cache: ${text}`);
+              doResolve({ success: true, text: text, embeds: [] });
+              return;
+            }
+          }
+        }
+      }
+
+      if (candidates.length === 0 && editedMessage) {
+        doResolve({
+          success: true,
+          text: editedMessage.content || "",
+          embeds: editedMessage.embeds ? editedMessage.embeds.map(e => e.toJSON ? e.toJSON() : e) : [],
+        });
+        return;
+      }
+
+      if (candidates.length === 0) {
+        doResolve({ success: false, text: "No response received from source bot." });
+        return;
+      }
+
+      // Prefer plain text, shortest first (keys are short)
+      const plainText = candidates.filter(m => {
+        const text = (m.content || "").trim();
+        return text.length > 0 && (!m.embeds || m.embeds.length === 0);
+      });
+
+      let best;
+      if (plainText.length > 0) {
+        best = plainText.reduce((a, b) => a.content.length <= b.content.length ? a : b);
+      } else {
+        best = candidates[0];
+      }
+
+      doResolve({
+        success: true,
+        text: best.content || "",
+        embeds: best.embeds ? best.embeds.map(e => e.toJSON ? e.toJSON() : e) : [],
+      });
+    }, 20000);
+
     try {
       const channel = await client.channels.fetch(sourceChId);
       const msg = await channel.messages.fetch(sourceMsgId);
@@ -225,6 +331,7 @@ async function clickSourceButton(sourceChId, sourceMsgId, customId) {
           if ((comp.customId || comp.custom_id) === customId) {
             await msg.clickButton(customId);
             clicked = true;
+            console.log(`[Selfbot] Clicked button ${customId}`);
             break;
           }
         }
@@ -232,92 +339,10 @@ async function clickSourceButton(sourceChId, sourceMsgId, customId) {
       }
 
       if (!clicked) {
-        resolve({ success: false, text: "Button not found on source message." });
-        return;
+        doResolve({ success: false, text: "Button not found on source message." });
       }
-
-      const collectedMessages = [];
-      let editedMessage = null;
-      let resolved = false;
-
-      function doResolve(data) {
-        if (resolved) return;
-        resolved = true;
-        resolve(data);
-      }
-
-      // Timeout fallback: pick the best candidate from collected messages
-      const timeout = setTimeout(() => {
-        // Filter out the original message and empty messages
-        const candidates = collectedMessages.filter(m =>
-          m.id !== sourceMsgId &&
-          ((m.content && m.content.trim().length > 0) || (m.embeds && m.embeds.length > 0))
-        );
-
-        if (candidates.length === 0 && editedMessage) {
-          doResolve({
-            success: true,
-            text: editedMessage.content || "",
-            embeds: editedMessage.embeds ? editedMessage.embeds.map(e => e.toJSON ? e.toJSON() : e) : [],
-          });
-          return;
-        }
-
-        if (candidates.length === 0) {
-          doResolve({ success: false, text: "No response received from source bot." });
-          return;
-        }
-
-        // Prefer plain text over embeds, and shortest plain text first (keys are short)
-        const plainText = candidates.filter(m =>
-          m.content && m.content.trim().length > 0 && (!m.embeds || m.embeds.length === 0)
-        );
-
-        let best;
-        if (plainText.length > 0) {
-          best = plainText.reduce((a, b) => a.content.length <= b.content.length ? a : b);
-        } else {
-          best = candidates[0];
-        }
-
-        doResolve({
-          success: true,
-          text: best.content || "",
-          embeds: best.embeds ? best.embeds.map(e => e.toJSON ? e.toJSON() : e) : [],
-        });
-      }, 10000);
-
-      const collector = channel.createMessageCollector({
-        filter: m => m.author?.bot && m.id !== sourceMsgId,
-        time: 10000,
-      });
-
-      collector.on('collect', (m) => {
-        collectedMessages.push(m);
-
-        const text = (m.content || "").trim();
-
-        // Keys are short plain-text ephemeral messages â€” grab them immediately
-        if (text.length > 0 && text.length < 200 && (!m.embeds || m.embeds.length === 0)) {
-          clearTimeout(timeout);
-          collector.stop();
-          doResolve({
-            success: true,
-            text: text,
-            embeds: [],
-          });
-        }
-      });
-
-      const onUpdate = async (oldMsg, newMsg) => {
-        if (newMsg.id === sourceMsgId) {
-          editedMessage = newMsg;
-        }
-      };
-      client.on('messageUpdate', onUpdate);
-
     } catch (err) {
-      resolve({ success: false, text: `Error: ${err.message}` });
+      doResolve({ success: false, text: `Error: ${err.message}` });
     }
   });
 }
