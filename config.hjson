@@ -1,18 +1,21 @@
 {
-  token: "MTMwNzk1NzcwNzcxMzgwNjM1Nw.Gf2agb.wdiryR8L6qtjzvDiJLztKTjRuISZwTC0cssWis"
+  token: "MTMwNzk1NzcwNzcxMzgwNjM1Nw.GxydJf.r3yb-DPYbc0Y_t_CF95ofS68ctjcccJDqnW7fE"
 
   channels: [
     {
       source: "1533578305272418394"
       destination: "1541807641561665618"
-    },
+      webhookUrl: ""
+    }
     {
       source: "1540390991033405511"
       destination: "1542014618363367445"
-    },
+      webhookUrl: ""
+    }
     {
       source: ""
       destination: ""
+      webhookUrl: ""
     }
   ]
 
