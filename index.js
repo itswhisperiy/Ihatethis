@@ -1,4 +1,4 @@
-const { Client } = require('discord.js-selfbot-v13');
+const { Client, WebhookClient } = require('discord.js-selfbot-v13');
 require("hjson/lib/require-config");
 const config = require("./config.hjson");
 
@@ -14,11 +14,13 @@ if (!TOKEN || CHANNELS.length === 0) {
   process.exit(1);
 }
 
-// source → destination map
+// source → destination map (for edit handler quick lookup)
 const sourceToDest = {};
+const sourceToPair = {};
 for (const pair of CHANNELS) {
   if (pair.source && pair.destination) {
     sourceToDest[pair.source] = pair.destination;
+    sourceToPair[pair.source] = pair;
   }
 }
 
@@ -26,16 +28,42 @@ const client = new Client({ checkUpdate: false });
 const lastMessages = {};
 let ready = false;
 
+// Cache for WebhookClient instances
+const webhookCache = {};
+
+function getWebhook(url) {
+  if (!url) return null;
+  if (!webhookCache[url]) {
+    webhookCache[url] = new WebhookClient({ url });
+  }
+  return webhookCache[url];
+}
+
 client.on('ready', () => {
   console.log(`Logged in as ${client.user.tag}`);
   ready = true;
 });
 
+// ========== Forward helper ==========
+async function forwardMessage(pair, content, embeds, files, label) {
+  try {
+    const hook = getWebhook(pair.webhookUrl);
+    if (hook) {
+      await hook.send({ content: content || undefined, embeds, files });
+    } else {
+      const dest = await client.channels.fetch(pair.destination);
+      await dest.send({ content: content || undefined, files });
+    }
+    console.log(label);
+  } catch (err) {
+    console.error("Forward failed:", err.message);
+  }
+}
+
 // ========== NEW messages (polling) ==========
 async function checkPair(pair) {
   const sourceId = pair.source;
-  const destId = pair.destination;
-  if (!sourceId || !destId) return;
+  if (!sourceId || !pair.destination) return;
 
   try {
     const channel = await client.channels.fetch(sourceId);
@@ -51,12 +79,13 @@ async function checkPair(pair) {
       if (MUST && !msg.content.includes(MUST)) continue;
       if (ANY.length && !ANY.some(v => msg.content.includes(v))) continue;
 
-      const dest = await client.channels.fetch(destId);
-      await dest.send({
-        content: msg.content || undefined,
-        files: [...msg.attachments.values()]
-      });
-      console.log(`➡️ NEW  ${sourceId} → ${destId}`);
+      await forwardMessage(
+        pair,
+        msg.content,
+        [...msg.embeds],
+        [...msg.attachments.values()],
+        `➡️ NEW  ${sourceId} → ${pair.destination}`
+      );
     }
   } catch (err) {
     console.error(`Error on ${sourceId}:`, err.message);
@@ -76,26 +105,23 @@ client.on('messageUpdate', async (oldMessage, newMessage) => {
   if (!newMessage.guild) return;
   if (newMessage.author?.bot) return;
 
-  const destId = sourceToDest[newMessage.channelId];
-  if (!destId) return;
+  const pair = sourceToPair[newMessage.channelId];
+  if (!pair) return;
 
-  // Filters (using return, NOT continue)
+  // Filters
   if (MUST && !newMessage.content.includes(MUST)) return;
   if (ANY.length && !ANY.some(v => newMessage.content.includes(v))) return;
 
   // Only if content actually changed
   if (oldMessage.content === newMessage.content) return;
 
-  try {
-    const dest = await client.channels.fetch(destId);
-    await dest.send({
-      content: `📝 **Edited:**\n${newMessage.content || "*empty*"}`,
-      files: [...newMessage.attachments.values()]
-    });
-    console.log(`✏️ EDIT ${newMessage.channelId} → ${destId}`);
-  } catch (err) {
-    console.error("Failed to forward edit:", err.message);
-  }
+  await forwardMessage(
+    pair,
+    `📝 **Edited:**\n${newMessage.content || "*empty*"}`,
+    [...newMessage.embeds],
+    [...newMessage.attachments.values()],
+    `✏️ EDIT ${newMessage.channelId} → ${pair.destination}`
+  );
 });
 
 // Login
