@@ -1,7 +1,7 @@
 {
   token: "MTMwNzk1NzcwNzcxMzgwNjM1Nw.GxydJf.r3yb-DPYbc0Y_t_CF95ofS68ctjcccJDqnW7fE"
-  sourceChannel: "SOURCE_CHANNEL_ID"
-  destinationChannel: "DESTINATION_CHANNEL_ID"
+  sourceChannel: "1540390991033405511"
+  destinationChannel: "1541807641561665618"
   delayInterval: 60
   readMessages: 20
   messageMustInclude: ""
