@@ -44,22 +44,6 @@ const lastMessages = loadState();
 const msgMap = loadMap();
 let ready = false;
 
-// ========== Helper: format button content as text ==========
-function formatButtonContent(msg) {
-  if (!msg.components?.length) return "";
-  const lines = [];
-  for (const row of msg.components) {
-    for (const comp of row.components || []) {
-      if (comp.type === 'BUTTON' || comp.type === 2) {
-        const label = comp.label || "Unlabeled";
-        const id = comp.customId || comp.custom_id || comp.url || "N/A";
-        lines.push(`• **${label}** \`(${id})\``);
-      }
-    }
-  }
-  return lines.length ? `\n\n🔘 **Buttons:**\n${lines.join("\n")}` : "";
-}
-
 const client = new Client({ checkUpdate: false });
 
 client.on('ready', () => {
@@ -75,7 +59,6 @@ async function forwardToBot(pair, msg) {
       sourceChannelId: msg.channelId,
       destination: pair.destination,
       content: msg.content,
-      componentText: formatButtonContent(msg),
       embeds: msg.embeds.map(e => e.toJSON ? e.toJSON() : e),
       attachments: [...msg.attachments.values()].map(a => a.url),
       components: msg.components.map(row => ({
@@ -229,6 +212,23 @@ server.listen(3002, () => {
   console.log("[Selfbot] HTTP server on port 3002");
 });
 
+// Helper: score a message by how much content it has
+function messageScore(m) {
+  let score = (m.content || "").length;
+  if (m.embeds) {
+    for (const e of m.embeds) {
+      score += (e.title || "").length;
+      score += (e.description || "").length;
+      if (e.fields) {
+        for (const f of e.fields) {
+          score += (f.name || "").length + (f.value || "").length;
+        }
+      }
+    }
+  }
+  return score;
+}
+
 // ========== Click button in source ==========
 async function clickSourceButton(sourceChId, sourceMsgId, customId) {
   return new Promise(async (resolve) => {
@@ -253,34 +253,65 @@ async function clickSourceButton(sourceChId, sourceMsgId, customId) {
         return;
       }
 
+      let editedMessage = null;
+      const collectedMessages = [];
+      let resolved = false;
+
+      function doResolve(data) {
+        if (resolved) return;
+        resolved = true;
+        resolve(data);
+      }
+
       const timeout = setTimeout(() => {
-        resolve({ success: false, text: "Timed out waiting for source bot response." });
-      }, 10000);
+        // Prefer new messages over edits — keys usually come as new messages
+        const useful = collectedMessages.filter(m => messageScore(m) > 0);
+        if (useful.length > 0) {
+          const best = useful.reduce((a, b) => messageScore(a) > messageScore(b) ? a : b);
+          doResolve({
+            success: true,
+            text: best.content || "",
+            embeds: best.embeds ? best.embeds.map(e => e.toJSON ? e.toJSON() : e) : [],
+          });
+          return;
+        }
+        if (editedMessage) {
+          doResolve({
+            success: true,
+            text: editedMessage.content || "",
+            embeds: editedMessage.embeds.map(e => e.toJSON ? e.toJSON() : e),
+          });
+          return;
+        }
+        doResolve({ success: false, text: "No response received from source bot." });
+      }, 15000);
 
       const collector = channel.createMessageCollector({
-        filter: m => m.author?.bot && (m.content?.length > 0 || m.embeds?.length > 0),
-        max: 1,
-        time: 10000,
+        filter: m => m.author?.bot,
+        time: 15000,
       });
 
       collector.on('collect', (m) => {
+        collectedMessages.push(m);
+        // If this message has substantial content, use it immediately
+        if (messageScore(m) > 10) {
+          clearTimeout(timeout);
+          collector.stop();
+          doResolve({
+            success: true,
+            text: m.content || "",
+            embeds: m.embeds ? m.embeds.map(e => e.toJSON ? e.toJSON() : e) : [],
+          });
+        }
+      });
+
+      collector.on('end', () => {
         clearTimeout(timeout);
-        resolve({
-          success: true,
-          text: m.content || "",
-          embeds: m.embeds.map(e => e.toJSON ? e.toJSON() : e),
-        });
       });
 
       const onUpdate = async (oldMsg, newMsg) => {
         if (newMsg.id === sourceMsgId) {
-          clearTimeout(timeout);
-          client.off('messageUpdate', onUpdate);
-          resolve({
-            success: true,
-            text: newMsg.content || "",
-            embeds: newMsg.embeds.map(e => e.toJSON ? e.toJSON() : e),
-          });
+          editedMessage = newMsg;
         }
       };
       client.on('messageUpdate', onUpdate);
