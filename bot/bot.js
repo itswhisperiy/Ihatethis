@@ -89,7 +89,7 @@ const server = http.createServer(async (req, res) => {
         const destChannel = await bot.channels.fetch(data.destination);
         const components = reconstructComponents(data.components, data.sourceId, data.sourceChannelId);
         const payload = {
-          content: (data.content || "") + (data.componentText || "") || undefined,
+          content: data.content || undefined,
           embeds: data.embeds?.length ? data.embeds : undefined,
           components: components?.length ? components : undefined,
           files: data.attachments?.length ? data.attachments : undefined,
@@ -159,7 +159,7 @@ bot.on(Events.InteractionCreate, async (interaction) => {
       sourceChannelId: sourceChId,
       sourceMessageId: sourceMsgId,
       customId: originalCustomId,
-    }, { timeout: 15000 });
+    }, { timeout: 20000 });
 
     const result = res.data;
     if (result.success) {
