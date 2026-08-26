@@ -156,7 +156,8 @@ async function checkAll() {
 client.on('messageUpdate', async (oldMessage, newMessage) => {
   if (!ready) return;
   if (!newMessage.guild) return;
-  if (newMessage.author?.bot) return;
+  // FIX: only skip our OWN edits, not bot embed updates
+  if (newMessage.author?.id === client.user.id) return;
   const pair = sourceToPair[newMessage.channelId];
   if (!pair) return;
   if (MUST && !newMessage.content.includes(MUST)) return;
@@ -232,7 +233,6 @@ async function clickSourceButton(sourceChId, sourceMsgId, customId) {
       clearTimeout(timeout);
     }
 
-    // Listen for ANY new message in the channel (ephemeral keys might not have bot flag)
     function onMessage(m) {
       if (m.channelId !== sourceChId) return;
       if (m.id === sourceMsgId) return;
@@ -242,7 +242,6 @@ async function clickSourceButton(sourceChId, sourceMsgId, customId) {
 
       collectedMessages.push(m);
 
-      // Keys are short plain text â€” resolve immediately when we see one
       if (text.length > 0 && text.length < 300 && (!m.embeds || m.embeds.length === 0)) {
         console.log(`[Selfbot Debug] Resolved with key: ${text}`);
         doResolve({ success: true, text: text, embeds: [] });
@@ -255,11 +254,9 @@ async function clickSourceButton(sourceChId, sourceMsgId, customId) {
       }
     }
 
-    // SET UP LISTENERS BEFORE CLICKING â€” critical fix
     client.on('messageCreate', onMessage);
     client.on('messageUpdate', onUpdate);
 
-    // Timeout fallback
     const timeout = setTimeout(() => {
       console.log(`[Selfbot Debug] Timeout. Collected ${collectedMessages.length} messages.`);
 
@@ -268,7 +265,6 @@ async function clickSourceButton(sourceChId, sourceMsgId, customId) {
         return m.id !== sourceMsgId && (text.length > 0 || (m.embeds && m.embeds.length > 0));
       });
 
-      // Try cache as last resort
       if (candidates.length === 0) {
         const channel = client.channels.cache.get(sourceChId);
         if (channel) {
@@ -301,7 +297,6 @@ async function clickSourceButton(sourceChId, sourceMsgId, customId) {
         return;
       }
 
-      // Prefer plain text, shortest first (keys are short)
       const plainText = candidates.filter(m => {
         const text = (m.content || "").trim();
         return text.length > 0 && (!m.embeds || m.embeds.length === 0);
