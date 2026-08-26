@@ -1,0 +1,10 @@
+{
+  "name": "echo-selfbot",
+  "version": "1.0.0",
+  "main": "selfbot.js",
+  "dependencies": {
+    "discord.js-selfbot-v13": "^3.7.1",
+    "axios": "^1.7.0",
+    "hjson": "^3.2.2"
+  }
+}
