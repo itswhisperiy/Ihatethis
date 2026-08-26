@@ -6,6 +6,7 @@ const config = require("../config.hjson");
 
 const TOKEN = (config.botToken || "").trim();
 const CHANNELS = Array.isArray(config.channels) ? config.channels : [];
+const SELFBOT_URL = (config.selfbotUrl || "http://127.0.0.1:3002").trim();
 
 if (!TOKEN) {
   console.error("[Bot] Missing botToken in config.hjson");
@@ -17,11 +18,8 @@ const bot = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildEmojis,
   ],
 });
-
-const SELFBOT_URL = "http://127.0.0.1:3002";
 
 // destMsgId -> { sourceMessageId, sourceChannelId }
 const messageMap = new Map();
@@ -73,14 +71,12 @@ function reconstructComponents(components, sourceMsgId, sourceChId) {
 async function findEmoji(name, guild) {
   if (!guild) return null;
 
-  // Try cache first
   let emoji = guild.emojis.cache.find(e => e.name === name);
   if (!emoji) {
     emoji = guild.emojis.cache.find(e => e.name.toLowerCase() === name.toLowerCase());
   }
   if (emoji) return emoji;
 
-  // Cache empty or emoji not found â€” force fetch
   if (guild.emojis.cache.size === 0 || !emoji) {
     try {
       await guild.emojis.fetch();
@@ -94,15 +90,11 @@ async function findEmoji(name, guild) {
     }
   }
 
-  // Fallback: search ALL guilds the bot is in
   for (const g of bot.guilds.cache.values()) {
     if (g.id === guild.id) continue;
     let e = g.emojis.cache.find(e => e.name === name);
     if (!e) e = g.emojis.cache.find(e => e.name.toLowerCase() === name.toLowerCase());
-    if (e) {
-      console.log(`[Bot Emoji] Found "${name}" in fallback guild "${g.name}"`);
-      return e;
-    }
+    if (e) return e;
   }
 
   return null;
@@ -111,7 +103,6 @@ async function findEmoji(name, guild) {
 async function resolveEmojis(text, guild) {
   if (!text || typeof text !== 'string') return text;
 
-  // Replace existing Discord emoji mentions from source server with destination equivalents
   let resolved = text;
   const mentionRegex = /<(a?):(\w+):(\d+)>/g;
   let match;
@@ -122,16 +113,13 @@ async function resolveEmojis(text, guild) {
       const replacement = emoji.animated ? `<a:${emoji.name}:${emoji.id}>` : `<:${emoji.name}:${emoji.id}>`;
       resolved = resolved.replace(full, replacement);
     } else {
-      // No matching emoji â€” strip the broken mention, keep just the name
       resolved = resolved.replace(full, `:${name}:`);
     }
   }
 
-  // Also handle bare :name: patterns (fallback)
   const bareRegex = /:([a-zA-Z0-9_]+):/g;
   while ((match = bareRegex.exec(text)) !== null) {
     const [full, name] = match;
-    // Skip if already replaced above or if it's a standard Discord timestamp
     if (resolved.includes(full)) {
       const emoji = await findEmoji(name, guild);
       if (emoji) {
