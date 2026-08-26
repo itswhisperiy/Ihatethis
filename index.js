@@ -1,5 +1,5 @@
 const fs = require("fs");
-const { Client, WebhookClient } = require('discord.js-selfbot-v13');
+const { Client, WebhookClient, MessageActionRow, MessageButton } = require('discord.js-selfbot-v13');
 require("hjson/lib/require-config");
 const config = require("./config.hjson");
 
@@ -57,20 +57,58 @@ function getWebhook(url) {
   return webhookCache[url];
 }
 
+// ========== Component reconstruction ==========
+function reconstructComponents(components) {
+  if (!components || components.length === 0) return [];
+
+  return components.map(row => {
+    const actionRow = new MessageActionRow();
+    const buttons = row.components.map(btn => {
+      // Link buttons (URLs) work anywhere
+      if (btn.url) {
+        return new MessageButton()
+          .setStyle('LINK')
+          .setLabel(btn.label || 'Link')
+          .setURL(btn.url)
+          .setEmoji(btn.emoji?.id || btn.emoji?.name || null)
+          .setDisabled(btn.disabled || false);
+      }
+      // Custom ID buttons will appear but won't function in the dest
+      // unless you also handle interactions there. We keep them for visuals.
+      return new MessageButton()
+        .setStyle(btn.style || 'SECONDARY')
+        .setLabel(btn.label || '\u200b')
+        .setCustomId(btn.customId || 'dead-btn')
+        .setEmoji(btn.emoji?.id || btn.emoji?.name || null)
+        .setDisabled(true); // disable non-link buttons since they won't work in dest
+    });
+    return actionRow.addComponents(buttons);
+  });
+}
+
 client.on('ready', () => {
   console.log(`Logged in as ${client.user.tag}`);
   ready = true;
 });
 
 // ========== Forward helper ==========
-async function forwardMessage(pair, content, embeds, files, label) {
+async function forwardMessage(pair, content, embeds, files, components, label) {
   try {
+    const payload = {
+      content: content || undefined,
+      embeds: embeds?.length ? embeds : undefined,
+      components: components?.length ? components : undefined,
+      files: files?.length ? files : undefined,
+    };
+
     const hook = getWebhook(pair.webhookUrl);
     if (hook) {
-      await hook.send({ content: content || undefined, embeds, files });
+      await hook.send(payload);
     } else {
       const dest = await client.channels.fetch(pair.destination);
-      await dest.send({ content: content || undefined, files });
+      // Normal user accounts cannot send components, so strip them
+      delete payload.components;
+      await dest.send(payload);
     }
     console.log(label);
   } catch (err) {
@@ -114,6 +152,7 @@ async function backfillPair(pair) {
         msg.content,
         [...msg.embeds],
         [...msg.attachments.values()],
+        reconstructComponents(msg.components),
         `📜 BACK ${sourceId} → ${pair.destination}`
       );
 
@@ -152,6 +191,7 @@ async function checkPair(pair) {
         msg.content,
         [...msg.embeds],
         [...msg.attachments.values()],
+        reconstructComponents(msg.components),
         `➡️ NEW  ${sourceId} → ${pair.destination}`
       );
     }
@@ -190,6 +230,7 @@ client.on('messageUpdate', async (oldMessage, newMessage) => {
     `📝 **Edited:**\n${newMessage.content || "*empty*"}`,
     [...newMessage.embeds],
     [...newMessage.attachments.values()],
+    reconstructComponents(newMessage.components),
     `✏️ EDIT ${newMessage.channelId} → ${pair.destination}`
   );
 });
