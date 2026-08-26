@@ -1,3 +1,4 @@
+const fs = require("fs");
 const { Client, WebhookClient } = require('discord.js-selfbot-v13');
 require("hjson/lib/require-config");
 const config = require("./config.hjson");
@@ -25,8 +26,25 @@ for (const pair of CHANNELS) {
 }
 
 const client = new Client({ checkUpdate: false });
-const lastMessages = {};
 let ready = false;
+
+// ========== State persistence ==========
+const STATE_PATH = "./state.json";
+
+function loadState() {
+  try {
+    const raw = fs.readFileSync(STATE_PATH, "utf8");
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+}
+
+function saveState(state) {
+  fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
+}
+
+const lastMessages = loadState();
 
 // Cache for WebhookClient instances
 const webhookCache = {};
@@ -60,6 +78,56 @@ async function forwardMessage(pair, content, embeds, files, label) {
   }
 }
 
+// ========== History backfill ==========
+async function fetchHistory(channel, count) {
+  const all = [];
+  let before = null;
+  while (all.length < count) {
+    const options = { limit: Math.min(100, count - all.length) };
+    if (before) options.before = before;
+    const batch = await channel.messages.fetch(options);
+    if (batch.size === 0) break;
+    all.push(...batch.values());
+    before = batch.last().id;
+  }
+  return all.reverse(); // oldest first
+}
+
+async function backfillPair(pair) {
+  const sourceId = pair.source;
+  const count = Number(pair.backfillCount) || 0;
+  if (!sourceId || !pair.destination || count <= 0) return;
+  if (lastMessages[sourceId]) return; // already has state, skip backfill
+
+  console.log(`📜 Backfilling ${count} messages from ${sourceId}...`);
+
+  try {
+    const channel = await client.channels.fetch(sourceId);
+    const messages = await fetchHistory(channel, count);
+
+    for (const msg of messages) {
+      if (MUST && !msg.content.includes(MUST)) continue;
+      if (ANY.length && !ANY.some(v => msg.content.includes(v))) continue;
+
+      await forwardMessage(
+        pair,
+        msg.content,
+        [...msg.embeds],
+        [...msg.attachments.values()],
+        `📜 BACK ${sourceId} → ${pair.destination}`
+      );
+
+      // update state so we don't re-forward on restart
+      lastMessages[sourceId] = msg.createdTimestamp;
+      saveState(lastMessages);
+    }
+
+    console.log(`✅ Backfill done for ${sourceId}`);
+  } catch (err) {
+    console.error(`Backfill failed on ${sourceId}:`, err.message);
+  }
+}
+
 // ========== NEW messages (polling) ==========
 async function checkPair(pair) {
   const sourceId = pair.source;
@@ -87,6 +155,8 @@ async function checkPair(pair) {
         `➡️ NEW  ${sourceId} → ${pair.destination}`
       );
     }
+
+    saveState(lastMessages);
   } catch (err) {
     console.error(`Error on ${sourceId}:`, err.message);
   }
@@ -124,10 +194,15 @@ client.on('messageUpdate', async (oldMessage, newMessage) => {
   );
 });
 
-// Login
+// Login + backfill on ready + start polling
 client.login(TOKEN).catch(e => {
   console.error("Login failed:", e.message);
   process.exit(1);
 });
 
-setInterval(checkAll, DELAY * 1000);
+client.on('ready', async () => {
+  for (const pair of CHANNELS) {
+    await backfillPair(pair);
+  }
+  setInterval(checkAll, DELAY * 1000);
+});
