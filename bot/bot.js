@@ -68,28 +68,61 @@ function reconstructComponents(components, sourceMsgId, sourceChId) {
   });
 }
 
-// ========== Emoji resolver (protects existing <:name:id> mentions) ==========
+// ========== Emoji resolver ==========
+function findEmoji(name, guild) {
+  // 1. Exact match in destination guild
+  if (guild) {
+    const exact = guild.emojis.cache.find(e => e.name === name);
+    if (exact) {
+      console.log(`[Bot Emoji] Found "${name}" in guild "${guild.name}" (exact)`);
+      return exact;
+    }
+    // 2. Case-insensitive match in destination guild
+    const ci = guild.emojis.cache.find(e => e.name.toLowerCase() === name.toLowerCase());
+    if (ci) {
+      console.log(`[Bot Emoji] Found "${name}" in guild "${guild.name}" (case-insensitive -> ${ci.name})`);
+      return ci;
+    }
+    console.log(`[Bot Emoji] "${name}" NOT found in guild "${guild.name}". Cache size: ${guild.emojis.cache.size}`);
+    console.log(`[Bot Emoji] Available emojis in "${guild.name}": [${guild.emojis.cache.map(e => e.name).join(', ')}]`);
+  }
+
+  // 3. Search ALL guilds the bot is in
+  const globalExact = bot.emojis.cache.find(e => e.name === name);
+  if (globalExact) {
+    console.log(`[Bot Emoji] Found "${name}" globally in guild "${globalExact.guild?.name || 'unknown'}"`);
+    return globalExact;
+  }
+  const globalCi = bot.emojis.cache.find(e => e.name.toLowerCase() === name.toLowerCase());
+  if (globalCi) {
+    console.log(`[Bot Emoji] Found "${name}" globally (case-insensitive -> ${globalCi.name})`);
+    return globalCi;
+  }
+
+  console.log(`[Bot Emoji] "${name}" NOT found anywhere. Global cache size: ${bot.emojis.cache.size}`);
+  return null;
+}
+
 function resolveEmojis(text, guild) {
   if (!text || typeof text !== 'string') return text;
-  const cache = guild ? guild.emojis.cache : bot.emojis.cache;
 
-  // 1. Protect existing Discord emoji mentions so we don't double-wrap them
+  // Protect existing Discord emoji mentions
   const protectedEmojis = [];
   let protectedText = text.replace(/<a?:\w+:\d+>/g, (match) => {
     protectedEmojis.push(match);
     return `__PROTECTED_EMOJI_${protectedEmojis.length - 1}__`;
   });
 
-  // 2. Replace bare :name: patterns only
+  // Replace bare :name: patterns
   protectedText = protectedText.replace(/:([a-zA-Z0-9_]+):/g, (match, name) => {
-    const emoji = cache.find(e => e.name === name);
+    const emoji = findEmoji(name, guild);
     if (emoji) {
       return emoji.animated ? `<a:${emoji.name}:${emoji.id}>` : `<:${emoji.name}:${emoji.id}>`;
     }
-    return match; // keep original if not found
+    return match; // keep original :name: if not found
   });
 
-  // 3. Restore protected emojis
+  // Restore protected emojis
   protectedEmojis.forEach((emoji, i) => {
     protectedText = protectedText.replace(`__PROTECTED_EMOJI_${i}__`, emoji);
   });
@@ -116,6 +149,10 @@ function resolveEmbedEmojis(embed, guild) {
 
 bot.on('ready', () => {
   console.log(`[Bot] Logged in as ${bot.user.tag}`);
+  console.log(`[Bot] Global emoji cache: ${bot.emojis.cache.size} emojis`);
+  bot.guilds.cache.forEach(g => {
+    console.log(`[Bot] Guild "${g.name}" (${g.id}) has ${g.emojis.cache.size} emojis: [${g.emojis.cache.map(e => e.name).join(', ')}]`);
+  });
 });
 
 // ========== HTTP endpoints ==========
