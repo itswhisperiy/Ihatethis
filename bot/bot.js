@@ -67,7 +67,7 @@ function reconstructComponents(components, sourceMsgId, sourceChId) {
   });
 }
 
-// ========== Emoji resolver (async, force-fetches if cache empty) ==========
+// ========== Emoji resolver (destination guild ONLY) ==========
 async function findEmoji(name, guild) {
   if (!guild) return null;
 
@@ -77,7 +77,8 @@ async function findEmoji(name, guild) {
   }
   if (emoji) return emoji;
 
-  if (guild.emojis.cache.size === 0 || !emoji) {
+  // Cache empty â€” force fetch from destination guild only
+  if (guild.emojis.cache.size === 0) {
     try {
       await guild.emojis.fetch();
       emoji = guild.emojis.cache.find(e => e.name === name);
@@ -90,13 +91,6 @@ async function findEmoji(name, guild) {
     }
   }
 
-  for (const g of bot.guilds.cache.values()) {
-    if (g.id === guild.id) continue;
-    let e = g.emojis.cache.find(e => e.name === name);
-    if (!e) e = g.emojis.cache.find(e => e.name.toLowerCase() === name.toLowerCase());
-    if (e) return e;
-  }
-
   return null;
 }
 
@@ -104,6 +98,8 @@ async function resolveEmojis(text, guild) {
   if (!text || typeof text !== 'string') return text;
 
   let resolved = text;
+
+  // 1. Replace existing Discord emoji mentions from source server
   const mentionRegex = /<(a?):(\w+):(\d+)>/g;
   let match;
   while ((match = mentionRegex.exec(text)) !== null) {
@@ -113,23 +109,35 @@ async function resolveEmojis(text, guild) {
       const replacement = emoji.animated ? `<a:${emoji.name}:${emoji.id}>` : `<:${emoji.name}:${emoji.id}>`;
       resolved = resolved.replace(full, replacement);
     } else {
+      // No matching emoji in destination â€” strip to bare name
       resolved = resolved.replace(full, `:${name}:`);
     }
   }
 
+  // 2. Replace bare :name: patterns
+  // BUT protect already-replaced mentions so we don't double-wrap them
+  const protectedMentions = [];
+  let protectedText = resolved.replace(/<(a?):(\w+):(\d+)>/g, (match) => {
+    protectedMentions.push(match);
+    return `__MENTION_${protectedMentions.length - 1}__`;
+  });
+
   const bareRegex = /:([a-zA-Z0-9_]+):/g;
-  while ((match = bareRegex.exec(text)) !== null) {
+  while ((match = bareRegex.exec(protectedText)) !== null) {
     const [full, name] = match;
-    if (resolved.includes(full)) {
-      const emoji = await findEmoji(name, guild);
-      if (emoji) {
-        const replacement = emoji.animated ? `<a:${emoji.name}:${emoji.id}>` : `<:${emoji.name}:${emoji.id}>`;
-        resolved = resolved.replace(full, replacement);
-      }
+    const emoji = await findEmoji(name, guild);
+    if (emoji) {
+      const replacement = emoji.animated ? `<a:${emoji.name}:${emoji.id}>` : `<:${emoji.name}:${emoji.id}>`;
+      protectedText = protectedText.replace(full, replacement);
     }
   }
 
-  return resolved;
+  // Restore protected mentions
+  protectedMentions.forEach((mention, i) => {
+    protectedText = protectedText.replace(`__MENTION_${i}__`, mention);
+  });
+
+  return protectedText;
 }
 
 async function resolveEmbedEmojis(embed, guild) {
