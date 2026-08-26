@@ -118,10 +118,16 @@ const server = http.createServer(async (req, res) => {
         const data = JSON.parse(body);
         const destChannel = await bot.channels.fetch(data.destination);
         const destMsg = await destChannel.messages.fetch(data.destMessageId);
-        await destMsg.edit({
-          content: `📝 **Edited:**\n${data.content || "*empty*"}`,
+
+        const editPayload = {
+          content: data.content || undefined,
           embeds: data.embeds?.length ? data.embeds : undefined,
-        });
+        };
+        if (destMsg.components?.length) {
+          editPayload.components = destMsg.components;
+        }
+
+        await destMsg.edit(editPayload);
         res.writeHead(200);
         res.end(JSON.stringify({ success: true }));
       } catch (err) {
@@ -167,11 +173,11 @@ bot.on(Events.InteractionCreate, async (interaction) => {
       if (result.embeds?.length) payload.embeds = result.embeds;
       await interaction.editReply(payload);
     } else {
-      await interaction.editReply({ content: `⚠️ ${result.text}` });
+      await interaction.editReply({ content: `âš ï¸ ${result.text}` });
     }
   } catch (err) {
     console.error("[Bot] Proxy click failed:", err.message);
-    await interaction.editReply({ content: "⚠️ Failed to reach selfbot. Is it running?" });
+    await interaction.editReply({ content: "âš ï¸ Failed to reach selfbot. Is it running?" });
   }
 });
 
