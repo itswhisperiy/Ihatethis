@@ -79,7 +79,7 @@ async function forwardToBot(pair, msg) {
       msgMap[msg.id] = res.data.destMessageId;
       saveMap(msgMap);
     }
-    console.log(`➡️ NEW  ${msg.channelId} → ${pair.destination}`);
+    console.log(`âž¡ï¸ NEW  ${msg.channelId} â†’ ${pair.destination}`);
   } catch (err) {
     console.error("[Selfbot] Forward failed:", err.message);
   }
@@ -106,7 +106,7 @@ async function backfillPair(pair) {
   if (!sourceId || !pair.destination || count <= 0) return;
   if (lastMessages[sourceId]) return;
 
-  console.log(`[Selfbot] 📜 Backfilling ${count} messages from ${sourceId}...`);
+  console.log(`[Selfbot] ðŸ“œ Backfilling ${count} messages from ${sourceId}...`);
   try {
     const channel = await client.channels.fetch(sourceId);
     const messages = await fetchHistory(channel, count);
@@ -117,7 +117,7 @@ async function backfillPair(pair) {
       lastMessages[sourceId] = msg.createdTimestamp;
       saveState(lastMessages);
     }
-    console.log(`[Selfbot] ✅ Backfill done for ${sourceId}`);
+    console.log(`[Selfbot] âœ… Backfill done for ${sourceId}`);
   } catch (err) {
     console.error(`[Selfbot] Backfill failed on ${sourceId}:`, err.message);
   }
@@ -173,7 +173,7 @@ client.on('messageUpdate', async (oldMessage, newMessage) => {
       content: newMessage.content,
       embeds: newMessage.embeds.map(e => e.toJSON ? e.toJSON() : e),
     }, { timeout: 15000 });
-    console.log(`✏️ EDIT ${newMessage.channelId} → ${pair.destination}`);
+    console.log(`âœï¸ EDIT ${newMessage.channelId} â†’ ${pair.destination}`);
   } catch (err) {
     console.error("[Selfbot] Edit forward failed:", err.message);
   }
@@ -212,23 +212,6 @@ server.listen(3002, () => {
   console.log("[Selfbot] HTTP server on port 3002");
 });
 
-// Helper: score a message by how much content it has
-function messageScore(m) {
-  let score = (m.content || "").length;
-  if (m.embeds) {
-    for (const e of m.embeds) {
-      score += (e.title || "").length;
-      score += (e.description || "").length;
-      if (e.fields) {
-        for (const f of e.fields) {
-          score += (f.name || "").length + (f.value || "").length;
-        }
-      }
-    }
-  }
-  return score;
-}
-
 // ========== Click button in source ==========
 async function clickSourceButton(sourceChId, sourceMsgId, customId) {
   return new Promise(async (resolve) => {
@@ -253,8 +236,8 @@ async function clickSourceButton(sourceChId, sourceMsgId, customId) {
         return;
       }
 
-      let editedMessage = null;
       const collectedMessages = [];
+      let editedMessage = null;
       let resolved = false;
 
       function doResolve(data) {
@@ -263,50 +246,67 @@ async function clickSourceButton(sourceChId, sourceMsgId, customId) {
         resolve(data);
       }
 
+      // Timeout fallback: pick the best candidate from collected messages
       const timeout = setTimeout(() => {
-        // Prefer new messages over edits — keys usually come as new messages
-        const useful = collectedMessages.filter(m => messageScore(m) > 0);
-        if (useful.length > 0) {
-          const best = useful.reduce((a, b) => messageScore(a) > messageScore(b) ? a : b);
-          doResolve({
-            success: true,
-            text: best.content || "",
-            embeds: best.embeds ? best.embeds.map(e => e.toJSON ? e.toJSON() : e) : [],
-          });
-          return;
-        }
-        if (editedMessage) {
+        // Filter out the original message and empty messages
+        const candidates = collectedMessages.filter(m =>
+          m.id !== sourceMsgId &&
+          ((m.content && m.content.trim().length > 0) || (m.embeds && m.embeds.length > 0))
+        );
+
+        if (candidates.length === 0 && editedMessage) {
           doResolve({
             success: true,
             text: editedMessage.content || "",
-            embeds: editedMessage.embeds.map(e => e.toJSON ? e.toJSON() : e),
+            embeds: editedMessage.embeds ? editedMessage.embeds.map(e => e.toJSON ? e.toJSON() : e) : [],
           });
           return;
         }
-        doResolve({ success: false, text: "No response received from source bot." });
-      }, 15000);
+
+        if (candidates.length === 0) {
+          doResolve({ success: false, text: "No response received from source bot." });
+          return;
+        }
+
+        // Prefer plain text over embeds, and shortest plain text first (keys are short)
+        const plainText = candidates.filter(m =>
+          m.content && m.content.trim().length > 0 && (!m.embeds || m.embeds.length === 0)
+        );
+
+        let best;
+        if (plainText.length > 0) {
+          best = plainText.reduce((a, b) => a.content.length <= b.content.length ? a : b);
+        } else {
+          best = candidates[0];
+        }
+
+        doResolve({
+          success: true,
+          text: best.content || "",
+          embeds: best.embeds ? best.embeds.map(e => e.toJSON ? e.toJSON() : e) : [],
+        });
+      }, 10000);
 
       const collector = channel.createMessageCollector({
-        filter: m => m.author?.bot,
-        time: 15000,
+        filter: m => m.author?.bot && m.id !== sourceMsgId,
+        time: 10000,
       });
 
       collector.on('collect', (m) => {
         collectedMessages.push(m);
-        // If this message has substantial content, use it immediately
-        if (messageScore(m) > 10) {
+
+        const text = (m.content || "").trim();
+
+        // Keys are short plain-text ephemeral messages â€” grab them immediately
+        if (text.length > 0 && text.length < 200 && (!m.embeds || m.embeds.length === 0)) {
           clearTimeout(timeout);
           collector.stop();
           doResolve({
             success: true,
-            text: m.content || "",
-            embeds: m.embeds ? m.embeds.map(e => e.toJSON ? e.toJSON() : e) : [],
+            text: text,
+            embeds: [],
           });
         }
-      });
-
-      collector.on('end', () => {
-        clearTimeout(timeout);
       });
 
       const onUpdate = async (oldMsg, newMsg) => {
