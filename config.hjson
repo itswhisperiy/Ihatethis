@@ -1,6 +1,6 @@
 {
-  selfbotToken: "MTMwNzk1NzcwNzcxMzgwNjM1Nw.GeMQW-._OXyzNfnbMAoIBRPDHRLmlVF2yquzZ4Ysk1jh8"
-  botToken: "MTU0MjE0NTg0MjIzNDc4OTk3OA.GGe-DF.Zl4_UIZAhgjnX7qm2kNk63BNwB-j_uHZazICG8"
+  selfbotToken: "YOUR_USER_ACCOUNT_TOKEN_HERE"
+  botToken: "YOUR_BOT_TOKEN_HERE"
 
   channels: [
     {
@@ -20,8 +20,8 @@
     }
   ]
 
-  delayInterval: 10
-  readMessages: 30
+  delayInterval: 60
+  readMessages: 20
   messageMustInclude: ""
   messageAnyIncludes: []
 }
