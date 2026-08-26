@@ -1,32 +1,29 @@
 const fs = require("fs");
-const { Client, WebhookClient, MessageActionRow, MessageButton } = require('discord.js-selfbot-v13');
+const { Client: SelfbotClient } = require('discord.js-selfbot-v13');
+const { Client: BotClient, GatewayIntentBits, Events, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 require("hjson/lib/require-config");
 const config = require("./config.hjson");
 
-const TOKEN = (config.token || "").trim();
+const SELFBOT_TOKEN = (config.selfbotToken || "").trim();
+const BOT_TOKEN = (config.botToken || "").trim();
 const CHANNELS = Array.isArray(config.channels) ? config.channels : [];
 const DELAY = Number(config.delayInterval) || 60;
 const LIMIT = Number(config.readMessages) || 20;
 const MUST = config.messageMustInclude || "";
 const ANY = Array.isArray(config.messageAnyIncludes) ? config.messageAnyIncludes.filter(Boolean) : [];
 
-if (!TOKEN || CHANNELS.length === 0) {
-  console.error("Missing token or channels in config.hjson");
+if (!SELFBOT_TOKEN || !BOT_TOKEN || CHANNELS.length === 0) {
+  console.error("Missing selfbotToken, botToken, or channels in config.hjson");
   process.exit(1);
 }
 
-// source → destination map (for edit handler quick lookup)
-const sourceToDest = {};
+// source → pair map
 const sourceToPair = {};
 for (const pair of CHANNELS) {
   if (pair.source && pair.destination) {
-    sourceToDest[pair.source] = pair.destination;
     sourceToPair[pair.source] = pair;
   }
 }
-
-const client = new Client({ checkUpdate: false });
-let ready = false;
 
 // ========== State persistence ==========
 const STATE_PATH = "./state.json";
@@ -46,54 +43,86 @@ function saveState(state) {
 
 const lastMessages = loadState();
 
-// Cache for WebhookClient instances
-const webhookCache = {};
+// ========== Message mapping ==========
+// destMessageId -> { sourceMessageId, sourceChannelId, customId }
+const messageMap = new Map();
+// sourceMessageId -> destMessageId
+const reverseMap = new Map();
 
-function getWebhook(url) {
-  if (!url) return null;
-  if (!webhookCache[url]) {
-    webhookCache[url] = new WebhookClient({ url });
-  }
-  return webhookCache[url];
-}
+let ready = false;
+
+// ========== Selfbot ==========
+const selfbot = new SelfbotClient({ checkUpdate: false });
+
+selfbot.on('ready', () => {
+  console.log(`[Selfbot] Logged in as ${selfbot.user.tag}`);
+  ready = true;
+});
+
+// ========== Real Bot ==========
+const bot = new BotClient({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+  ],
+});
+
+bot.on('ready', () => {
+  console.log(`[Bot] Logged in as ${bot.user.tag}`);
+});
 
 // ========== Component reconstruction ==========
-function reconstructComponents(components) {
+function styleNameToEnum(style) {
+  const map = {
+    1: ButtonStyle.Primary,
+    2: ButtonStyle.Secondary,
+    3: ButtonStyle.Success,
+    4: ButtonStyle.Danger,
+    5: ButtonStyle.Link,
+    'PRIMARY': ButtonStyle.Primary,
+    'SECONDARY': ButtonStyle.Secondary,
+    'SUCCESS': ButtonStyle.Success,
+    'DANGER': ButtonStyle.Danger,
+    'LINK': ButtonStyle.Link,
+  };
+  return map[style] ?? ButtonStyle.Secondary;
+}
+
+function reconstructComponents(components, sourceMsgId, sourceChId) {
   if (!components || components.length === 0) return [];
 
   return components.map(row => {
-    const actionRow = new MessageActionRow();
+    const actionRow = new ActionRowBuilder();
     const buttons = row.components.map(btn => {
-      // Link buttons (URLs) work anywhere
-      if (btn.url) {
-        return new MessageButton()
-          .setStyle('LINK')
-          .setLabel(btn.label || 'Link')
-          .setURL(btn.url)
-          .setEmoji(btn.emoji?.id || btn.emoji?.name || null)
-          .setDisabled(btn.disabled || false);
-      }
-      // Custom ID buttons will appear but won't function in the dest
-      // unless you also handle interactions there. We keep them for visuals.
-      return new MessageButton()
-        .setStyle(btn.style || 'SECONDARY')
+      const style = styleNameToEnum(btn.style);
+      const builder = new ButtonBuilder()
+        .setStyle(style)
         .setLabel(btn.label || '\u200b')
-        .setCustomId(btn.customId || 'dead-btn')
-        .setEmoji(btn.emoji?.id || btn.emoji?.name || null)
-        .setDisabled(true); // disable non-link buttons since they won't work in dest
+        .setDisabled(false);
+
+      if (style === ButtonStyle.Link && btn.url) {
+        builder.setURL(btn.url);
+      } else {
+        // Proxy button — encode source info in customId
+        const proxyId = `proxy:${sourceChId}:${sourceMsgId}:${btn.customId || btn.custom_id || 'btn'}`;
+        builder.setCustomId(proxyId);
+      }
+
+      if (btn.emoji) {
+        builder.setEmoji(btn.emoji.id || btn.emoji.name);
+      }
+
+      return builder;
     });
     return actionRow.addComponents(buttons);
   });
 }
 
-client.on('ready', () => {
-  console.log(`Logged in as ${client.user.tag}`);
-  ready = true;
-});
-
-// ========== Forward helper ==========
-async function forwardMessage(pair, content, embeds, files, components, label) {
+// ========== Forward helper (bot posts to destination) ==========
+async function forwardToDest(pair, content, embeds, files, components, sourceMsgId, sourceChId) {
   try {
+    const destChannel = await bot.channels.fetch(pair.destination);
     const payload = {
       content: content || undefined,
       embeds: embeds?.length ? embeds : undefined,
@@ -101,20 +130,97 @@ async function forwardMessage(pair, content, embeds, files, components, label) {
       files: files?.length ? files : undefined,
     };
 
-    const hook = getWebhook(pair.webhookUrl);
-    if (hook) {
-      await hook.send(payload);
-    } else {
-      const dest = await client.channels.fetch(pair.destination);
-      // Normal user accounts cannot send components, so strip them
-      delete payload.components;
-      await dest.send(payload);
-    }
-    console.log(label);
+    const sent = await destChannel.send(payload);
+    console.log(`➡️ NEW  ${sourceChId} → ${pair.destination}`);
+
+    // Map destination message back to source for interaction proxying
+    messageMap.set(sent.id, { sourceMessageId: sourceMsgId, sourceChannelId: sourceChId });
+    reverseMap.set(sourceMsgId, sent.id);
+    return sent;
   } catch (err) {
     console.error("Forward failed:", err.message);
+    return null;
   }
 }
+
+// ========== Selfbot clicks button in source ==========
+async function clickSourceButton(sourceChId, sourceMsgId, customId) {
+  return new Promise(async (resolve) => {
+    try {
+      const channel = await selfbot.channels.fetch(sourceChId);
+      const msg = await channel.messages.fetch(sourceMsgId);
+
+      // Try to find and click the button component
+      let clicked = false;
+      for (const row of msg.components || []) {
+        for (const comp of row.components) {
+          if ((comp.customId || comp.custom_id) === customId) {
+            await comp.click();
+            clicked = true;
+            break;
+          }
+        }
+        if (clicked) break;
+      }
+
+      if (!clicked) {
+        resolve({ success: false, text: "Button not found on source message." });
+        return;
+      }
+
+      // Race: ephemeral reply OR message update OR timeout
+      const timeout = setTimeout(() => {
+        resolve({ success: false, text: "Timed out waiting for source bot response." });
+      }, 10000);
+
+      // Listen for ephemeral message in the channel
+      const collector = channel.createMessageCollector({
+        filter: m => m.author?.bot && m.content?.length > 0,
+        max: 1,
+        time: 10000,
+      });
+
+      collector.on('collect', (m) => {
+        clearTimeout(timeout);
+        resolve({ success: true, text: m.content, embeds: [...m.embeds] });
+      });
+
+      // Also listen for message update (some bots edit instead of replying)
+      const onUpdate = async (oldMsg, newMsg) => {
+        if (newMsg.id === sourceMsgId && newMsg.content !== oldMsg.content) {
+          clearTimeout(timeout);
+          selfbot.off('messageUpdate', onUpdate);
+          resolve({ success: true, text: newMsg.content, embeds: [...newMsg.embeds] });
+        }
+      };
+      selfbot.on('messageUpdate', onUpdate);
+
+    } catch (err) {
+      resolve({ success: false, text: `Error: ${err.message}` });
+    }
+  });
+}
+
+// ========== Bot handles button clicks in destination ==========
+bot.on(Events.InteractionCreate, async (interaction) => {
+  if (!interaction.isButton()) return;
+  if (!interaction.customId.startsWith('proxy:')) return;
+
+  const [, sourceChId, sourceMsgId, originalCustomId] = interaction.customId.split(':');
+  if (!sourceChId || !sourceMsgId || !originalCustomId) return;
+
+  await interaction.deferReply({ ephemeral: true });
+
+  const result = await clickSourceButton(sourceChId, sourceMsgId, originalCustomId);
+
+  if (result.success) {
+    const payload = { content: result.text || "Done!" };
+    if (result.embeds?.length) payload.embeds = result.embeds;
+    await interaction.editReply(payload);
+  } else {
+    await interaction.editReply({ content: `⚠️ ${result.text}` });
+  }
+});
 
 // ========== History backfill ==========
 async function fetchHistory(channel, count) {
@@ -128,35 +234,36 @@ async function fetchHistory(channel, count) {
     all.push(...batch.values());
     before = batch.last().id;
   }
-  return all.reverse(); // oldest first
+  return all.reverse();
 }
 
 async function backfillPair(pair) {
   const sourceId = pair.source;
   const count = Number(pair.backfillCount) || 0;
   if (!sourceId || !pair.destination || count <= 0) return;
-  if (lastMessages[sourceId]) return; // already has state, skip backfill
+  if (lastMessages[sourceId]) return;
 
   console.log(`📜 Backfilling ${count} messages from ${sourceId}...`);
 
   try {
-    const channel = await client.channels.fetch(sourceId);
+    const channel = await selfbot.channels.fetch(sourceId);
     const messages = await fetchHistory(channel, count);
 
     for (const msg of messages) {
       if (MUST && !msg.content.includes(MUST)) continue;
       if (ANY.length && !ANY.some(v => msg.content.includes(v))) continue;
 
-      await forwardMessage(
+      const components = reconstructComponents(msg.components, msg.id, sourceId);
+      await forwardToDest(
         pair,
         msg.content,
         [...msg.embeds],
         [...msg.attachments.values()],
-        reconstructComponents(msg.components),
-        `📜 BACK ${sourceId} → ${pair.destination}`
+        components,
+        msg.id,
+        sourceId
       );
 
-      // update state so we don't re-forward on restart
       lastMessages[sourceId] = msg.createdTimestamp;
       saveState(lastMessages);
     }
@@ -173,7 +280,7 @@ async function checkPair(pair) {
   if (!sourceId || !pair.destination) return;
 
   try {
-    const channel = await client.channels.fetch(sourceId);
+    const channel = await selfbot.channels.fetch(sourceId);
     const messages = await channel.messages.fetch({ limit: LIMIT });
     const sorted = [...messages.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
 
@@ -186,13 +293,15 @@ async function checkPair(pair) {
       if (MUST && !msg.content.includes(MUST)) continue;
       if (ANY.length && !ANY.some(v => msg.content.includes(v))) continue;
 
-      await forwardMessage(
+      const components = reconstructComponents(msg.components, msg.id, sourceId);
+      await forwardToDest(
         pair,
         msg.content,
         [...msg.embeds],
         [...msg.attachments.values()],
-        reconstructComponents(msg.components),
-        `➡️ NEW  ${sourceId} → ${pair.destination}`
+        components,
+        msg.id,
+        sourceId
       );
     }
 
@@ -210,7 +319,7 @@ async function checkAll() {
 }
 
 // ========== EDITED messages ==========
-client.on('messageUpdate', async (oldMessage, newMessage) => {
+selfbot.on('messageUpdate', async (oldMessage, newMessage) => {
   if (!ready) return;
   if (!newMessage.guild) return;
   if (newMessage.author?.bot) return;
@@ -218,32 +327,40 @@ client.on('messageUpdate', async (oldMessage, newMessage) => {
   const pair = sourceToPair[newMessage.channelId];
   if (!pair) return;
 
-  // Filters
   if (MUST && !newMessage.content.includes(MUST)) return;
   if (ANY.length && !ANY.some(v => newMessage.content.includes(v))) return;
-
-  // Only if content actually changed
   if (oldMessage.content === newMessage.content) return;
 
-  await forwardMessage(
-    pair,
-    `📝 **Edited:**\n${newMessage.content || "*empty*"}`,
-    [...newMessage.embeds],
-    [...newMessage.attachments.values()],
-    reconstructComponents(newMessage.components),
-    `✏️ EDIT ${newMessage.channelId} → ${pair.destination}`
-  );
-});
+  const destMsgId = reverseMap.get(newMessage.id);
+  if (!destMsgId) return;
 
-// Login + backfill on ready + start polling
-client.login(TOKEN).catch(e => {
-  console.error("Login failed:", e.message);
-  process.exit(1);
-});
-
-client.on('ready', async () => {
-  for (const pair of CHANNELS) {
-    await backfillPair(pair);
+  try {
+    const destChannel = await bot.channels.fetch(pair.destination);
+    const destMsg = await destChannel.messages.fetch(destMsgId);
+    await destMsg.edit({
+      content: `📝 **Edited:**\n${newMessage.content || "*empty*"}`,
+      embeds: [...newMessage.embeds],
+    });
+    console.log(`✏️ EDIT ${newMessage.channelId} → ${pair.destination}`);
+  } catch (err) {
+    console.error("Failed to forward edit:", err.message);
   }
-  setInterval(checkAll, DELAY * 1000);
+});
+
+// ========== Startup ==========
+async function start() {
+  await bot.login(BOT_TOKEN);
+  await selfbot.login(SELFBOT_TOKEN);
+
+  selfbot.on('ready', async () => {
+    for (const pair of CHANNELS) {
+      await backfillPair(pair);
+    }
+    setInterval(checkAll, DELAY * 1000);
+  });
+}
+
+start().catch(e => {
+  console.error("Startup failed:", e.message);
+  process.exit(1);
 });
