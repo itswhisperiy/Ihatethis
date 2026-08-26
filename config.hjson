@@ -1,17 +1,17 @@
 {
-  token: "MTMwNzk1NzcwNzcxMzgwNjM1Nw.GxydJf.r3yb-DPYbc0Y_t_CF95ofS68ctjcccJDqnW7fE"
+  token: "MTMwNzk1NzcwNzcxMzgwNjM1Nw.Gf2agb.wdiryR8L6qtjzvDiJLztKTjRuISZwTC0cssWis"
 
   channels: [
     {
       source: "1533578305272418394"
       destination: "1541807641561665618"
-      webhookUrl: ""
+      webhookUrl: "https://discord.com/api/webhooks/1542043980471074866/pyl0oxJAVnr1Xt_xoezq8-MIBa0Qq64nnaIBe596gDD9xihrmbXF9_J1dIzBrA4N8Teo"
       backfillCount: 200
     }
     {
       source: "1540390991033405511"
       destination: "1542014618363367445"
-      webhookUrl: ""
+      webhookUrl: "https://discord.com/api/webhooks/1542044136067170306/FPiZUcQGhP45y-COGasC90gG6X-zPLmEN4llg37TzSMwSk7whCufwvnaBwkK-37Pllqi"
       backfillCount: 0
     }
     {
