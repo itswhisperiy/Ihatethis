@@ -1,6 +1,6 @@
 {
-  selfbotToken: ""
-  botToken: ""
+  selfbotToken: "MTMwNzk1NzcwNzcxMzgwNjM1Nw.Ghhv5o.BAqICnx26L0etv9h1KQmoL3Er93cti0jqAWfAw"
+  botToken: "MTU0MjE0NTg0MjIzNDc4OTk3OA.GpplRT.6U_07k08rg_-vwDxTYnvHPhPdgzUM94k9ieWjM"
 
   channels: [
     {
