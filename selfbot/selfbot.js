@@ -41,8 +41,24 @@ function saveMap(map) {
 }
 
 const lastMessages = loadState();
-const msgMap = loadMap(); // sourceMsgId -> destMsgId
+const msgMap = loadMap();
 let ready = false;
+
+// ========== Helper: format button content as text ==========
+function formatButtonContent(msg) {
+  if (!msg.components?.length) return "";
+  const lines = [];
+  for (const row of msg.components) {
+    for (const comp of row.components || []) {
+      if (comp.type === 'BUTTON' || comp.type === 2) {
+        const label = comp.label || "Unlabeled";
+        const id = comp.customId || comp.custom_id || comp.url || "N/A";
+        lines.push(`• **${label}** \`(${id})\``);
+      }
+    }
+  }
+  return lines.length ? `\n\n🔘 **Buttons:**\n${lines.join("\n")}` : "";
+}
 
 const client = new Client({ checkUpdate: false });
 
@@ -59,6 +75,7 @@ async function forwardToBot(pair, msg) {
       sourceChannelId: msg.channelId,
       destination: pair.destination,
       content: msg.content,
+      componentText: formatButtonContent(msg),
       embeds: msg.embeds.map(e => e.toJSON ? e.toJSON() : e),
       attachments: [...msg.attachments.values()].map(a => a.url),
       components: msg.components.map(row => ({
@@ -223,7 +240,7 @@ async function clickSourceButton(sourceChId, sourceMsgId, customId) {
       for (const row of msg.components || []) {
         for (const comp of row.components) {
           if ((comp.customId || comp.custom_id) === customId) {
-            await comp.click();
+            await msg.clickButton(customId);
             clicked = true;
             break;
           }
