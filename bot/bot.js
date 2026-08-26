@@ -77,7 +77,6 @@ async function findEmoji(name, guild) {
   }
   if (emoji) return emoji;
 
-  // Cache empty â€” force fetch from destination guild only
   if (guild.emojis.cache.size === 0) {
     try {
       await guild.emojis.fetch();
@@ -99,7 +98,6 @@ async function resolveEmojis(text, guild) {
 
   let resolved = text;
 
-  // 1. Replace existing Discord emoji mentions from source server
   const mentionRegex = /<(a?):(\w+):(\d+)>/g;
   let match;
   while ((match = mentionRegex.exec(text)) !== null) {
@@ -109,13 +107,10 @@ async function resolveEmojis(text, guild) {
       const replacement = emoji.animated ? `<a:${emoji.name}:${emoji.id}>` : `<:${emoji.name}:${emoji.id}>`;
       resolved = resolved.replace(full, replacement);
     } else {
-      // No matching emoji in destination â€” strip to bare name
       resolved = resolved.replace(full, `:${name}:`);
     }
   }
 
-  // 2. Replace bare :name: patterns
-  // BUT protect already-replaced mentions so we don't double-wrap them
   const protectedMentions = [];
   let protectedText = resolved.replace(/<(a?):(\w+):(\d+)>/g, (match) => {
     protectedMentions.push(match);
@@ -132,7 +127,6 @@ async function resolveEmojis(text, guild) {
     }
   }
 
-  // Restore protected mentions
   protectedMentions.forEach((mention, i) => {
     protectedText = protectedText.replace(`__MENTION_${i}__`, mention);
   });
@@ -233,6 +227,29 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify({ success: true }));
       } catch (err) {
         console.error("[Bot] /edit error:", err.message);
+        res.writeHead(500);
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    });
+    return;
+  }
+
+  // ========== NEW: Delete endpoint ==========
+  if (parsed.pathname === "/delete" && req.method === "POST") {
+    let body = "";
+    req.on("data", chunk => body += chunk);
+    req.on("end", async () => {
+      try {
+        const data = JSON.parse(body);
+        const destChannel = await bot.channels.fetch(data.destination);
+        const destMsg = await destChannel.messages.fetch(data.destMessageId);
+        await destMsg.delete();
+        messageMap.delete(data.destMessageId);
+        res.writeHead(200);
+        res.end(JSON.stringify({ success: true }));
+        console.log(`ðŸ—‘ï¸ Bot deleted message in ${data.destination}`);
+      } catch (err) {
+        console.error("[Bot] /delete error:", err.message);
         res.writeHead(500);
         res.end(JSON.stringify({ success: false, error: err.message }));
       }
