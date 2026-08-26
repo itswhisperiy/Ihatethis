@@ -219,27 +219,30 @@ async function clickSourceButton(sourceChId, sourceMsgId, customId) {
       const channel = await client.channels.fetch(sourceChId);
       const msg = await channel.messages.fetch(sourceMsgId);
 
-      let clicked = false;
+      // Check button exists
+      let found = false;
       for (const row of msg.components || []) {
         for (const comp of row.components) {
           if ((comp.customId || comp.custom_id) === customId) {
-            await comp.click();
-            clicked = true;
+            found = true;
             break;
           }
         }
-        if (clicked) break;
       }
 
-      if (!clicked) {
+      if (!found) {
         resolve({ success: false, text: "Button not found on source message." });
         return;
       }
+
+      // Click using message.clickButton (the correct API)
+      await msg.clickButton(customId);
 
       const timeout = setTimeout(() => {
         resolve({ success: false, text: "Timed out waiting for source bot response." });
       }, 10000);
 
+      // Listen for ephemeral bot reply
       const collector = channel.createMessageCollector({
         filter: m => m.author?.bot && (m.content?.length > 0 || m.embeds?.length > 0),
         max: 1,
@@ -248,6 +251,7 @@ async function clickSourceButton(sourceChId, sourceMsgId, customId) {
 
       collector.on('collect', (m) => {
         clearTimeout(timeout);
+        client.off('messageUpdate', onUpdate);
         resolve({
           success: true,
           text: m.content || "",
@@ -255,9 +259,11 @@ async function clickSourceButton(sourceChId, sourceMsgId, customId) {
         });
       });
 
+      // Also catch message edits (some bots edit instead of replying)
       const onUpdate = async (oldMsg, newMsg) => {
         if (newMsg.id === sourceMsgId) {
           clearTimeout(timeout);
+          collector.stop();
           client.off('messageUpdate', onUpdate);
           resolve({
             success: true,
