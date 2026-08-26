@@ -1,185 +1,78 @@
 const fs = require("fs");
-const { Client } = require('discord.js-selfbot-v13');
+const { Client, GatewayIntentBits, Events, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const axios = require("axios");
 require("hjson/lib/require-config");
 const config = require("../config.hjson");
 
-const TOKEN = (config.selfbotToken || "").trim();
+const TOKEN = (config.botToken || "").trim();
 const CHANNELS = Array.isArray(config.channels) ? config.channels : [];
-const DELAY = Number(config.delayInterval) || 60;
-const LIMIT = Number(config.readMessages) || 20;
-const MUST = config.messageMustInclude || "";
-const ANY = Array.isArray(config.messageAnyIncludes) ? config.messageAnyIncludes.filter(Boolean) : [];
-const BOT_URL = "http://127.0.0.1:3001";
 
-if (!TOKEN || CHANNELS.length === 0) {
-  console.error("[Selfbot] Missing token or channels in config.hjson");
+if (!TOKEN) {
+  console.error("[Bot] Missing botToken in config.hjson");
   process.exit(1);
 }
 
-const sourceToPair = {};
-for (const pair of CHANNELS) {
-  if (pair.source && pair.destination) {
-    sourceToPair[pair.source] = pair;
-  }
-}
-
-const STATE_PATH = "./state.json";
-const MAP_PATH = "./map.json";
-
-function loadState() {
-  try { return JSON.parse(fs.readFileSync(STATE_PATH, "utf8")); } catch { return {}; }
-}
-function saveState(state) {
-  fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
-}
-function loadMap() {
-  try { return JSON.parse(fs.readFileSync(MAP_PATH, "utf8")); } catch { return {}; }
-}
-function saveMap(map) {
-  fs.writeFileSync(MAP_PATH, JSON.stringify(map, null, 2));
-}
-
-const lastMessages = loadState();
-const msgMap = loadMap(); // sourceMsgId -> destMsgId
-let ready = false;
-
-const client = new Client({ checkUpdate: false });
-
-client.on('ready', () => {
-  console.log(`[Selfbot] Logged in as ${client.user.tag}`);
-  ready = true;
+const bot = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+  ],
 });
 
-// ========== Forward to bot via HTTP ==========
-async function forwardToBot(pair, msg) {
-  try {
-    const payload = {
-      sourceId: msg.id,
-      sourceChannelId: msg.channelId,
-      destination: pair.destination,
-      content: msg.content,
-      embeds: msg.embeds.map(e => e.toJSON ? e.toJSON() : e),
-      attachments: [...msg.attachments.values()].map(a => a.url),
-      components: msg.components.map(row => ({
-        type: row.type,
-        components: row.components.map(btn => ({
-          type: btn.type,
-          style: btn.style,
-          label: btn.label,
-          customId: btn.customId || btn.custom_id,
-          url: btn.url,
-          emoji: btn.emoji,
-          disabled: btn.disabled,
-        }))
-      })),
-    };
-    const res = await axios.post(`${BOT_URL}/forward`, payload, { timeout: 15000 });
-    if (res.data && res.data.destMessageId) {
-      msgMap[msg.id] = res.data.destMessageId;
-      saveMap(msgMap);
-    }
-    console.log(`➡️ NEW  ${msg.channelId} → ${pair.destination}`);
-  } catch (err) {
-    console.error("[Selfbot] Forward failed:", err.message);
-  }
+const SELFBOT_URL = "http://127.0.0.1:3002";
+
+// destMsgId -> { sourceMessageId, sourceChannelId }
+const messageMap = new Map();
+
+function styleNameToEnum(style) {
+  const map = {
+    1: ButtonStyle.Primary,
+    2: ButtonStyle.Secondary,
+    3: ButtonStyle.Success,
+    4: ButtonStyle.Danger,
+    5: ButtonStyle.Link,
+    'PRIMARY': ButtonStyle.Primary,
+    'SECONDARY': ButtonStyle.Secondary,
+    'SUCCESS': ButtonStyle.Success,
+    'DANGER': ButtonStyle.Danger,
+    'LINK': ButtonStyle.Link,
+  };
+  return map[style] ?? ButtonStyle.Secondary;
 }
 
-// ========== History backfill ==========
-async function fetchHistory(channel, count) {
-  const all = [];
-  let before = null;
-  while (all.length < count) {
-    const options = { limit: Math.min(100, count - all.length) };
-    if (before) options.before = before;
-    const batch = await channel.messages.fetch(options);
-    if (batch.size === 0) break;
-    all.push(...batch.values());
-    before = batch.last().id;
-  }
-  return all.reverse();
+function reconstructComponents(components, sourceMsgId, sourceChId) {
+  if (!components || components.length === 0) return [];
+  return components.map(row => {
+    const actionRow = new ActionRowBuilder();
+    const buttons = row.components.map(btn => {
+      const style = styleNameToEnum(btn.style);
+      const builder = new ButtonBuilder()
+        .setStyle(style)
+        .setLabel(btn.label || '\u200b')
+        .setDisabled(false);
+
+      if (style === ButtonStyle.Link && btn.url) {
+        builder.setURL(btn.url);
+      } else {
+        const proxyId = `proxy:${sourceChId}:${sourceMsgId}:${btn.customId || btn.custom_id || 'btn'}`;
+        builder.setCustomId(proxyId);
+      }
+
+      if (btn.emoji) {
+        builder.setEmoji(btn.emoji.id || btn.emoji.name);
+      }
+      return builder;
+    });
+    return actionRow.addComponents(buttons);
+  });
 }
 
-async function backfillPair(pair) {
-  const sourceId = pair.source;
-  const count = Number(pair.backfillCount) || 0;
-  if (!sourceId || !pair.destination || count <= 0) return;
-  if (lastMessages[sourceId]) return;
-
-  console.log(`[Selfbot] 📜 Backfilling ${count} messages from ${sourceId}...`);
-  try {
-    const channel = await client.channels.fetch(sourceId);
-    const messages = await fetchHistory(channel, count);
-    for (const msg of messages) {
-      if (MUST && !msg.content.includes(MUST)) continue;
-      if (ANY.length && !ANY.some(v => msg.content.includes(v))) continue;
-      await forwardToBot(pair, msg);
-      lastMessages[sourceId] = msg.createdTimestamp;
-      saveState(lastMessages);
-    }
-    console.log(`[Selfbot] ✅ Backfill done for ${sourceId}`);
-  } catch (err) {
-    console.error(`[Selfbot] Backfill failed on ${sourceId}:`, err.message);
-  }
-}
-
-// ========== Polling ==========
-async function checkPair(pair) {
-  const sourceId = pair.source;
-  if (!sourceId || !pair.destination) return;
-  try {
-    const channel = await client.channels.fetch(sourceId);
-    const messages = await channel.messages.fetch({ limit: LIMIT });
-    const sorted = [...messages.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
-    const last = lastMessages[sourceId] || 0;
-    for (const msg of sorted) {
-      if (msg.createdTimestamp <= last) continue;
-      lastMessages[sourceId] = msg.createdTimestamp;
-      if (MUST && !msg.content.includes(MUST)) continue;
-      if (ANY.length && !ANY.some(v => msg.content.includes(v))) continue;
-      await forwardToBot(pair, msg);
-    }
-    saveState(lastMessages);
-  } catch (err) {
-    console.error(`[Selfbot] Error on ${sourceId}:`, err.message);
-  }
-}
-
-async function checkAll() {
-  if (!ready) return;
-  for (const pair of CHANNELS) {
-    await checkPair(pair);
-  }
-}
-
-// ========== Edit tracking ==========
-client.on('messageUpdate', async (oldMessage, newMessage) => {
-  if (!ready) return;
-  if (!newMessage.guild) return;
-  if (newMessage.author?.bot) return;
-  const pair = sourceToPair[newMessage.channelId];
-  if (!pair) return;
-  if (MUST && !newMessage.content.includes(MUST)) return;
-  if (ANY.length && !ANY.some(v => newMessage.content.includes(v))) return;
-  if (oldMessage.content === newMessage.content && JSON.stringify(oldMessage.embeds) === JSON.stringify(newMessage.embeds)) return;
-
-  const destMsgId = msgMap[newMessage.id];
-  if (!destMsgId) return;
-
-  try {
-    await axios.post(`${BOT_URL}/edit`, {
-      destination: pair.destination,
-      destMessageId: destMsgId,
-      content: newMessage.content,
-      embeds: newMessage.embeds.map(e => e.toJSON ? e.toJSON() : e),
-    }, { timeout: 15000 });
-    console.log(`✏️ EDIT ${newMessage.channelId} → ${pair.destination}`);
-  } catch (err) {
-    console.error("[Selfbot] Edit forward failed:", err.message);
-  }
+bot.on('ready', () => {
+  console.log(`[Bot] Logged in as ${bot.user.tag}`);
 });
 
-// ========== Button click endpoint ==========
+// ========== HTTP endpoints ==========
 const http = require("http");
 const url = require("url");
 
@@ -187,18 +80,54 @@ const server = http.createServer(async (req, res) => {
   const parsed = url.parse(req.url, true);
   res.setHeader("Content-Type", "application/json");
 
-  if (parsed.pathname === "/click" && req.method === "POST") {
+  if (parsed.pathname === "/forward" && req.method === "POST") {
     let body = "";
     req.on("data", chunk => body += chunk);
     req.on("end", async () => {
       try {
-        const { sourceChannelId, sourceMessageId, customId } = JSON.parse(body);
-        const result = await clickSourceButton(sourceChannelId, sourceMessageId, customId);
+        const data = JSON.parse(body);
+        const destChannel = await bot.channels.fetch(data.destination);
+        const components = reconstructComponents(data.components, data.sourceId, data.sourceChannelId);
+        const payload = {
+          content: data.content || undefined,
+          embeds: data.embeds?.length ? data.embeds : undefined,
+          components: components?.length ? components : undefined,
+          files: data.attachments?.length ? data.attachments : undefined,
+        };
+        const sent = await destChannel.send(payload);
+        messageMap.set(sent.id, {
+          sourceMessageId: data.sourceId,
+          sourceChannelId: data.sourceChannelId,
+        });
         res.writeHead(200);
-        res.end(JSON.stringify(result));
+        res.end(JSON.stringify({ success: true, destMessageId: sent.id }));
       } catch (err) {
+        console.error("[Bot] /forward error:", err.message);
         res.writeHead(500);
-        res.end(JSON.stringify({ success: false, text: err.message }));
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    });
+    return;
+  }
+
+  if (parsed.pathname === "/edit" && req.method === "POST") {
+    let body = "";
+    req.on("data", chunk => body += chunk);
+    req.on("end", async () => {
+      try {
+        const data = JSON.parse(body);
+        const destChannel = await bot.channels.fetch(data.destination);
+        const destMsg = await destChannel.messages.fetch(data.destMessageId);
+        await destMsg.edit({
+          content: `📝 **Edited:**\n${data.content || "*empty*"}`,
+          embeds: data.embeds?.length ? data.embeds : undefined,
+        });
+        res.writeHead(200);
+        res.end(JSON.stringify({ success: true }));
+      } catch (err) {
+        console.error("[Bot] /edit error:", err.message);
+        res.writeHead(500);
+        res.end(JSON.stringify({ success: false, error: err.message }));
       }
     });
     return;
@@ -208,87 +137,45 @@ const server = http.createServer(async (req, res) => {
   res.end(JSON.stringify({ error: "Not found" }));
 });
 
-server.listen(3002, () => {
-  console.log("[Selfbot] HTTP server on port 3002");
+server.listen(3001, () => {
+  console.log("[Bot] HTTP server on port 3001");
 });
 
-// ========== Click button in source ==========
-async function clickSourceButton(sourceChId, sourceMsgId, customId) {
-  return new Promise(async (resolve) => {
-    try {
-      const channel = await client.channels.fetch(sourceChId);
-      const msg = await channel.messages.fetch(sourceMsgId);
+// ========== Handle button clicks ==========
+bot.on(Events.InteractionCreate, async (interaction) => {
+  if (!interaction.isButton()) return;
+  if (!interaction.customId.startsWith('proxy:')) return;
 
-      // Check button exists
-      let found = false;
-      for (const row of msg.components || []) {
-        for (const comp of row.components) {
-          if ((comp.customId || comp.custom_id) === customId) {
-            found = true;
-            break;
-          }
-        }
-      }
+  const parts = interaction.customId.split(':');
+  if (parts.length < 4) return;
+  const sourceChId = parts[1];
+  const sourceMsgId = parts[2];
+  const originalCustomId = parts[3];
 
-      if (!found) {
-        resolve({ success: false, text: "Button not found on source message." });
-        return;
-      }
+  await interaction.deferReply({ ephemeral: true });
 
-      // Click using message.clickButton (the correct API)
-      await msg.clickButton(customId);
+  try {
+    const res = await axios.post(`${SELFBOT_URL}/click`, {
+      sourceChannelId: sourceChId,
+      sourceMessageId: sourceMsgId,
+      customId: originalCustomId,
+    }, { timeout: 15000 });
 
-      const timeout = setTimeout(() => {
-        resolve({ success: false, text: "Timed out waiting for source bot response." });
-      }, 10000);
-
-      // Listen for ephemeral bot reply
-      const collector = channel.createMessageCollector({
-        filter: m => m.author?.bot && (m.content?.length > 0 || m.embeds?.length > 0),
-        max: 1,
-        time: 10000,
-      });
-
-      collector.on('collect', (m) => {
-        clearTimeout(timeout);
-        client.off('messageUpdate', onUpdate);
-        resolve({
-          success: true,
-          text: m.content || "",
-          embeds: m.embeds.map(e => e.toJSON ? e.toJSON() : e),
-        });
-      });
-
-      // Also catch message edits (some bots edit instead of replying)
-      const onUpdate = async (oldMsg, newMsg) => {
-        if (newMsg.id === sourceMsgId) {
-          clearTimeout(timeout);
-          collector.stop();
-          client.off('messageUpdate', onUpdate);
-          resolve({
-            success: true,
-            text: newMsg.content || "",
-            embeds: newMsg.embeds.map(e => e.toJSON ? e.toJSON() : e),
-          });
-        }
-      };
-      client.on('messageUpdate', onUpdate);
-
-    } catch (err) {
-      resolve({ success: false, text: `Error: ${err.message}` });
+    const result = res.data;
+    if (result.success) {
+      const payload = { content: result.text || "Done!" };
+      if (result.embeds?.length) payload.embeds = result.embeds;
+      await interaction.editReply(payload);
+    } else {
+      await interaction.editReply({ content: `⚠️ ${result.text}` });
     }
-  });
-}
-
-// ========== Startup ==========
-client.login(TOKEN).catch(e => {
-  console.error("[Selfbot] Login failed:", e.message);
-  process.exit(1);
+  } catch (err) {
+    console.error("[Bot] Proxy click failed:", err.message);
+    await interaction.editReply({ content: "⚠️ Failed to reach selfbot. Is it running?" });
+  }
 });
 
-client.on('ready', async () => {
-  for (const pair of CHANNELS) {
-    await backfillPair(pair);
-  }
-  setInterval(checkAll, DELAY * 1000);
+bot.login(TOKEN).catch(e => {
+  console.error("[Bot] Login failed:", e.message);
+  process.exit(1);
 });
