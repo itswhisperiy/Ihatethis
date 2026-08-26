@@ -1,6 +1,15 @@
 FROM node:20-slim
 WORKDIR /app
-COPY package*.json ./
-RUN npm install --omit=dev
+
+# Bot deps (discord.js v14, isolated)
+COPY bot/package*.json ./bot/
+RUN cd bot && npm install --omit=dev
+
+# Selfbot deps (discord.js-selfbot-v13, isolated)
+COPY selfbot/package*.json ./selfbot/
+RUN cd selfbot && npm install --omit=dev
+
+# App code
 COPY . .
-CMD ["npm", "start"]
+
+CMD ["sh", "start.sh"]
