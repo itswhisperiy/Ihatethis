@@ -68,17 +68,33 @@ function reconstructComponents(components, sourceMsgId, sourceChId) {
   });
 }
 
-// ========== Emoji resolver (destination-guild only) ==========
+// ========== Emoji resolver (protects existing <:name:id> mentions) ==========
 function resolveEmojis(text, guild) {
   if (!text || typeof text !== 'string') return text;
   const cache = guild ? guild.emojis.cache : bot.emojis.cache;
-  return text.replace(/:([a-zA-Z0-9_]+):/g, (match, name) => {
+
+  // 1. Protect existing Discord emoji mentions so we don't double-wrap them
+  const protectedEmojis = [];
+  let protectedText = text.replace(/<a?:\w+:\d+>/g, (match) => {
+    protectedEmojis.push(match);
+    return `__PROTECTED_EMOJI_${protectedEmojis.length - 1}__`;
+  });
+
+  // 2. Replace bare :name: patterns only
+  protectedText = protectedText.replace(/:([a-zA-Z0-9_]+):/g, (match, name) => {
     const emoji = cache.find(e => e.name === name);
     if (emoji) {
       return emoji.animated ? `<a:${emoji.name}:${emoji.id}>` : `<:${emoji.name}:${emoji.id}>`;
     }
-    return match; // keep original if not found in destination guild
+    return match; // keep original if not found
   });
+
+  // 3. Restore protected emojis
+  protectedEmojis.forEach((emoji, i) => {
+    protectedText = protectedText.replace(`__PROTECTED_EMOJI_${i}__`, emoji);
+  });
+
+  return protectedText;
 }
 
 function resolveEmbedEmojis(embed, guild) {
@@ -120,7 +136,6 @@ const server = http.createServer(async (req, res) => {
         const guild = destChannel.guild || null;
         const components = reconstructComponents(data.components, data.sourceId, data.sourceChannelId);
 
-        // Resolve emojis using DESTINATION guild only
         const resolvedContent = resolveEmojis(data.content, guild);
         const resolvedEmbeds = data.embeds?.length
           ? data.embeds.map(e => resolveEmbedEmojis(e, guild))
@@ -158,7 +173,6 @@ const server = http.createServer(async (req, res) => {
         const destMsg = await destChannel.messages.fetch(data.destMessageId);
         const guild = destChannel.guild || null;
 
-        // Resolve emojis using DESTINATION guild only
         const resolvedEmbeds = data.embeds?.length
           ? data.embeds.map(e => resolveEmbedEmojis(e, guild))
           : undefined;
