@@ -1,5 +1,5 @@
 #!/bin/sh
-node bot.js &
+node bot/bot.js &
 sleep 3
-node selfbot.js &
+node selfbot/selfbot.js &
 wait
