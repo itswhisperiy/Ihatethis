@@ -1,29 +1,27 @@
 {
-  token: ""
+  selfbotToken: "YOUR_USER_ACCOUNT_TOKEN_HERE"
+  botToken: "YOUR_BOT_TOKEN_HERE"
 
   channels: [
     {
       source: "1533578305272418394"
       destination: "1541807641561665618"
-      webhookUrl: "https://discord.com/api/webhooks/1542043980471074866/pyl0oxJAVnr1Xt_xoezq8-MIBa0Qq64nnaIBe596gDD9xihrmbXF9_J1dIzBrA4N8Teo"
       backfillCount: 200
     }
     {
       source: "1540390991033405511"
       destination: "1542014618363367445"
-      webhookUrl: "https://discord.com/api/webhooks/1542044136067170306/FPiZUcQGhP45y-COGasC90gG6X-zPLmEN4llg37TzSMwSk7whCufwvnaBwkK-37Pllqi"
       backfillCount: 0
     }
     {
       source: ""
       destination: ""
-      webhookUrl: ""
       backfillCount: 0
     }
   ]
 
-  delayInterval: 10
-  readMessages: 30
+  delayInterval: 60
+  readMessages: 20
   messageMustInclude: ""
   messageAnyIncludes: []
 }
