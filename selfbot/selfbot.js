@@ -1,5 +1,5 @@
 const fs = require("fs");
-const { Client } = require('discord.js-selfbot-v13');
+const { Client, Options } = require('discord.js-selfbot-v13');
 const axios = require("axios");
 require("hjson/lib/require-config");
 const config = require("../config.hjson");
@@ -44,7 +44,37 @@ const lastMessages = loadState();
 const msgMap = loadMap();
 let ready = false;
 
-const client = new Client({ checkUpdate: false });
+const client = new Client({
+  checkUpdate: false,
+  ...(Options && Options.cacheWithLimits ? {
+    makeCache: Options.cacheWithLimits({
+      MessageManager: 10,
+      UserManager: 50,
+      GuildMemberManager: 50,
+      ChannelManager: 20,
+      GuildManager: 5,
+      PresenceManager: 0,
+      ReactionManager: 0,
+      ReactionUserManager: 0,
+      StageInstanceManager: 0,
+      VoiceStateManager: 0,
+    })
+  } : {}),
+});
+
+// Periodic cache sweep to prevent unbounded memory growth
+setInterval(() => {
+  try {
+    client.sweepMessages(60);
+    if (client.users.cache.size > 100) client.users.cache.sweep(() => true);
+    if (client.channels.cache.size > 30) {
+      const keepIds = new Set(CHANNELS.map(c => c.source));
+      client.channels.cache.sweep(ch => !keepIds.has(ch.id));
+    }
+  } catch (e) {
+    // ignore sweep errors
+  }
+}, 60000);
 
 client.on('ready', () => {
   console.log(`[Selfbot] Logged in as ${client.user.tag}`);
@@ -90,7 +120,7 @@ async function fetchHistory(channel, count) {
   const all = [];
   let before = null;
   while (all.length < count) {
-    const options = { limit: Math.min(100, count - all.length) };
+    const options = { limit: Math.min(100, count - all.length), cache: false };
     if (before) options.before = before;
     const batch = await channel.messages.fetch(options);
     if (batch.size === 0) break;
@@ -116,6 +146,8 @@ async function backfillPair(pair) {
       await forwardToBot(pair, msg);
       lastMessages[sourceId] = msg.createdTimestamp;
       saveState(lastMessages);
+      // Small delay between backfill messages to reduce burst and memory pressure
+      await new Promise(r => setTimeout(r, 200));
     }
     console.log(`[Selfbot] âœ… Backfill done for ${sourceId}`);
   } catch (err) {
@@ -129,7 +161,7 @@ async function checkPair(pair) {
   if (!sourceId || !pair.destination) return;
   try {
     const channel = await client.channels.fetch(sourceId);
-    const messages = await channel.messages.fetch({ limit: LIMIT });
+    const messages = await channel.messages.fetch({ limit: LIMIT, cache: false });
     const sorted = [...messages.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
     const last = lastMessages[sourceId] || 0;
     for (const msg of sorted) {
@@ -253,6 +285,8 @@ async function clickSourceButton(sourceChId, sourceMsgId, customId) {
       client.off('messageCreate', onMessage);
       client.off('messageUpdate', onUpdate);
       clearTimeout(timeout);
+      collectedMessages.length = 0; // Free references
+      editedMessage = null;
     }
 
     function onMessage(m) {
