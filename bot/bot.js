@@ -7,6 +7,7 @@ const config = require("../config.hjson");
 const TOKEN = (config.botToken || "").trim();
 const CHANNELS = Array.isArray(config.channels) ? config.channels : [];
 const SELFBOT_URL = (config.selfbotUrl || "http://127.0.0.1:3002").trim();
+const MAP_PATH = "./map.json";
 
 if (!TOKEN) {
   console.error("[Bot] Missing botToken in config.hjson");
@@ -175,6 +176,75 @@ async function resolveEmbedEmojis(embed, guild) {
 
 bot.on('ready', () => {
   console.log(`[Bot] Logged in as ${bot.user.tag}`);
+});
+
+// ========== PURGE COMMAND ==========
+bot.on(Events.MessageCreate, async (message) => {
+  if (message.author.bot) return;
+  if (message.content.trim().toLowerCase() !== '!purgebot') return;
+
+  // Require Administrator permission
+  const member = message.guild?.members.cache.get(message.author.id);
+  if (!member?.permissions.has('Administrator')) {
+    return message.reply('âŒ You need Administrator permission to use this.').catch(() => {});
+  }
+
+  let mapData = {};
+  try {
+    mapData = JSON.parse(fs.readFileSync(MAP_PATH, 'utf8'));
+  } catch {
+    return message.reply('ðŸ“­ No tracked messages to purge.').catch(() => {});
+  }
+
+  // Filter entries that use the new object format { destId, destChannel }
+  const entries = Object.entries(mapData).filter(([k, v]) => v && typeof v === 'object' && v.destId && v.destChannel);
+  if (entries.length === 0) {
+    return message.reply('ðŸ“­ No tracked messages to purge (old-format entries skipped).').catch(() => {});
+  }
+
+  const statusMsg = await message.reply(`ðŸ§¹ Starting purge of ${entries.length} mirrored messages...`).catch(() => null);
+  let deleted = 0;
+  let failed = 0;
+  const byChannel = {};
+
+  for (const [, val] of entries) {
+    if (!byChannel[val.destChannel]) byChannel[val.destChannel] = [];
+    byChannel[val.destChannel].push(val.destId);
+  }
+
+  for (const [chId, msgIds] of Object.entries(byChannel)) {
+    const channel = await bot.channels.fetch(chId).catch(() => null);
+    if (!channel) {
+      failed += msgIds.length;
+      continue;
+    }
+    for (const msgId of msgIds) {
+      try {
+        const msg = await channel.messages.fetch(msgId, { cache: false });
+        await msg.delete();
+        deleted++;
+      } catch (err) {
+        failed++;
+      }
+      // 350ms delay to stay safely under Discord rate limits
+      await new Promise(r => setTimeout(r, 350));
+    }
+  }
+
+  // Clear the tracking files/maps since tracked messages are gone
+  try {
+    fs.writeFileSync(MAP_PATH, JSON.stringify({}, null, 2));
+  } catch (e) {
+    console.error('[Bot] Failed to clear map.json:', e.message);
+  }
+  messageMap.clear();
+
+  const replyText = `âœ… Purge complete.\nðŸ—‘ï¸ Deleted: ${deleted}\nâŒ Failed / not found: ${failed}`;
+  if (statusMsg) {
+    statusMsg.edit(replyText).catch(() => {});
+  } else {
+    message.reply(replyText).catch(() => {});
+  }
 });
 
 // ========== HTTP endpoints ==========
