@@ -1,5 +1,5 @@
 const fs = require("fs");
-const { Client, GatewayIntentBits, Events, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { Client, GatewayIntentBits, Events, ActionRowBuilder, ButtonBuilder, ButtonStyle, Options } = require('discord.js');
 const axios = require("axios");
 require("hjson/lib/require-config");
 const config = require("../config.hjson");
@@ -19,7 +19,29 @@ const bot = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
   ],
+  makeCache: Options.cacheWithLimits({
+    MessageManager: 50,
+    UserManager: 100,
+    GuildMemberManager: 100,
+    ChannelManager: 30,
+    GuildManager: 10,
+    PresenceManager: 0,
+    ReactionManager: 0,
+    ReactionUserManager: 0,
+    StageInstanceManager: 0,
+    VoiceStateManager: 0,
+  }),
 });
+
+// Periodic cache sweep to prevent unbounded memory growth
+setInterval(() => {
+  try {
+    bot.sweepMessages(300); // Keep messages younger than 5 minutes
+    if (bot.users.cache.size > 200) bot.users.cache.sweep(() => true);
+  } catch (e) {
+    // ignore sweep errors
+  }
+}, 120000);
 
 // destMsgId -> { sourceMessageId, sourceChannelId }
 const messageMap = new Map();
@@ -207,7 +229,7 @@ const server = http.createServer(async (req, res) => {
       try {
         const data = JSON.parse(body);
         const destChannel = await bot.channels.fetch(data.destination);
-        const destMsg = await destChannel.messages.fetch(data.destMessageId);
+        const destMsg = await destChannel.messages.fetch(data.destMessageId, { cache: false });
         const guild = destChannel.guild || null;
 
         const resolvedEmbeds = data.embeds?.length
@@ -234,7 +256,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // ========== NEW: Delete endpoint ==========
+  // ========== Delete endpoint ==========
   if (parsed.pathname === "/delete" && req.method === "POST") {
     let body = "";
     req.on("data", chunk => body += chunk);
@@ -242,7 +264,7 @@ const server = http.createServer(async (req, res) => {
       try {
         const data = JSON.parse(body);
         const destChannel = await bot.channels.fetch(data.destination);
-        const destMsg = await destChannel.messages.fetch(data.destMessageId);
+        const destMsg = await destChannel.messages.fetch(data.destMessageId, { cache: false });
         await destMsg.delete();
         messageMap.delete(data.destMessageId);
         res.writeHead(200);
