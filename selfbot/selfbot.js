@@ -106,7 +106,8 @@ async function forwardToBot(pair, msg) {
     };
     const res = await axios.post(`${BOT_URL}/forward`, payload, { timeout: 15000 });
     if (res.data && res.data.destMessageId) {
-      msgMap[msg.id] = res.data.destMessageId;
+      // NEW FORMAT: store destId + destChannel so the bot can purge later
+      msgMap[msg.id] = { destId: res.data.destMessageId, destChannel: pair.destination };
       saveMap(msgMap);
     }
     console.log(`âž¡ï¸ NEW  ${msg.channelId} â†’ ${pair.destination}`);
@@ -193,9 +194,12 @@ client.on('messageUpdate', async (oldMessage, newMessage) => {
   if (!pair) return;
   if (MUST && !newMessage.content.includes(MUST)) return;
   if (ANY.length && !ANY.some(v => newMessage.content.includes(v))) return;
-  if (oldMessage.content === newMessage.content && JSON.stringify(oldMessage.embeds) === JSON.stringify(newMessage.embeds)) return;
 
-  const destMsgId = msgMap[newMessage.id];
+  // SAFEGUARD: if oldMessage wasn't cached, skip duplicate-check and forward anyway
+  if (oldMessage && oldMessage.content === newMessage.content && JSON.stringify(oldMessage.embeds) === JSON.stringify(newMessage.embeds)) return;
+
+  const entry = msgMap[newMessage.id];
+  const destMsgId = entry && typeof entry === 'object' ? entry.destId : entry;
   if (!destMsgId) return;
 
   try {
@@ -218,7 +222,8 @@ client.on('messageDelete', async (message) => {
   const pair = sourceToPair[message.channelId];
   if (!pair) return;
 
-  const destMsgId = msgMap[message.id];
+  const entry = msgMap[message.id];
+  const destMsgId = entry && typeof entry === 'object' ? entry.destId : entry;
   if (!destMsgId) return;
 
   try {
