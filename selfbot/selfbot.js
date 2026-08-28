@@ -81,32 +81,215 @@ client.on('ready', () => {
   ready = true;
 });
 
+// ========== Linkvertise bypass ==========
+const LINKVERTISE_DOMAINS = [
+  'linkvertise.com',
+  'link-to.net',
+  'direct-link.net',
+  'up-to-down.net',
+  'linkvertise.download',
+  'link-center.net',
+  'link-target.net',
+  'linkvertise.net',
+];
+
+const bypassCache = new Map();
+setInterval(() => bypassCache.clear(), 3600000); // clear every hour
+
+function isLinkvertiseUrl(url) {
+  if (!url || typeof url !== 'string') return false;
+  try {
+    const hostname = new URL(url).hostname.toLowerCase();
+    return LINKVERTISE_DOMAINS.some(d => hostname === d || hostname.endsWith('.' + d));
+  } catch {
+    return false;
+  }
+}
+
+async function bypassLinkvertise(url) {
+  if (bypassCache.has(url)) return bypassCache.get(url);
+
+  try {
+    const res = await axios.get(url, {
+      timeout: 10000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+      },
+      maxRedirects: 5,
+    });
+
+    const html = res.data;
+    let realUrl = null;
+
+    // Pattern 1: window.location.href = "..."
+    let m = html.match(/window\.location\.href\s*=\s*["'](https?:\/\/[^"']+)["']/i);
+    if (m && !isLinkvertiseUrl(m[1])) realUrl = m[1];
+
+    // Pattern 2: window.location.replace("...")
+    if (!realUrl) {
+      m = html.match(/window\.location\.replace\s*\(\s*["'](https?:\/\/[^"']+)["']\s*\)/i);
+      if (m && !isLinkvertiseUrl(m[1])) realUrl = m[1];
+    }
+
+    // Pattern 3: window.location.assign("...")
+    if (!realUrl) {
+      m = html.match(/window\.location\.assign\s*\(\s*["'](https?:\/\/[^"']+)["']\s*\)/i);
+      if (m && !isLinkvertiseUrl(m[1])) realUrl = m[1];
+    }
+
+    // Pattern 4: "target":"https://..." (JSON-escaped)
+    if (!realUrl) {
+      m = html.match(/"target"\s*:\s*"((?:https?:\\/\\/|https?:\/\/)[^"]+)"/i);
+      if (m) {
+        let target = m[1].replace(/\\u002f/g, '/').replace(/\\\//g, '/');
+        if (!isLinkvertiseUrl(target)) realUrl = target;
+      }
+    }
+
+    // Pattern 5: const/var/let targetUrl = '...'
+    if (!realUrl) {
+      m = html.match(/(?:const|var|let)\s+\w*[Tt]arget\w*\s*=\s*["'](https?:\/\/[^"']+)["']/i);
+      if (m && !isLinkvertiseUrl(m[1])) realUrl = m[1];
+    }
+
+    // Pattern 6: data-url="..." or data-href="..."
+    if (!realUrl) {
+      m = html.match(/data-(?:url|href)\s*=\s*["'](https?:\/\/[^"']+)["']/i);
+      if (m && !isLinkvertiseUrl(m[1])) realUrl = m[1];
+    }
+
+    // Pattern 7: meta refresh
+    if (!realUrl) {
+      m = html.match(/<meta[^>]+http-equiv\s*=\s*["']refresh["'][^>]+url\s*=\s*(https?:\/\/[^"'>]+)/i);
+      if (m && !isLinkvertiseUrl(m[1])) realUrl = m[1];
+    }
+
+    // Pattern 8: <a id="..." href="https://..."> where href is not linkvertise
+    if (!realUrl) {
+      const hrefMatches = html.matchAll(/href\s*=\s*["'](https?:\/\/[^"']+)["']/gi);
+      for (const match of hrefMatches) {
+        if (!isLinkvertiseUrl(match[1])) {
+          realUrl = match[1];
+          break;
+        }
+      }
+    }
+
+    const result = realUrl || url;
+    bypassCache.set(url, result);
+    if (result !== url) {
+      console.log(`[Selfbot] â›“ï¸â€ðŸ’¥ Bypassed Linkvertise: ${url} â†’ ${result}`);
+    }
+    return result;
+  } catch (err) {
+    console.error(`[Selfbot] Linkvertise bypass failed for ${url}:`, err.message);
+    bypassCache.set(url, url);
+    return url;
+  }
+}
+
+async function resolveLinkvertise(text) {
+  if (!text || typeof text !== 'string') return text;
+
+  const urlRegex = /https?:\/\/[^\s<>"{}|\\^`\[\]]+/gi;
+  const matches = [...text.matchAll(urlRegex)].map(m => m[0]);
+  if (matches.length === 0) return text;
+
+  let resolved = text;
+  for (const url of matches) {
+    if (isLinkvertiseUrl(url)) {
+      const real = await bypassLinkvertise(url);
+      if (real !== url) {
+        resolved = resolved.replace(url, real);
+      }
+    }
+  }
+  return resolved;
+}
+
+async function resolveEmbedLinkvertise(embed) {
+  if (!embed) return embed;
+  const resolved = embed.toJSON ? embed.toJSON() : { ...embed };
+
+  if (resolved.description) resolved.description = await resolveLinkvertise(resolved.description);
+  if (resolved.title) resolved.title = await resolveLinkvertise(resolved.title);
+  if (resolved.url && isLinkvertiseUrl(resolved.url)) {
+    resolved.url = await bypassLinkvertise(resolved.url);
+  }
+  if (resolved.footer?.text) resolved.footer.text = await resolveLinkvertise(resolved.footer.text);
+  if (resolved.author?.name) resolved.author.name = await resolveLinkvertise(resolved.author.name);
+  if (resolved.author?.url && isLinkvertiseUrl(resolved.author.url)) {
+    resolved.author.url = await bypassLinkvertise(resolved.author.url);
+  }
+  if (Array.isArray(resolved.fields)) {
+    for (const field of resolved.fields) {
+      if (field.name) field.name = await resolveLinkvertise(field.name);
+      if (field.value) field.value = await resolveLinkvertise(field.value);
+    }
+  }
+  if (resolved.image?.url && isLinkvertiseUrl(resolved.image.url)) {
+    resolved.image.url = await bypassLinkvertise(resolved.image.url);
+  }
+  if (resolved.thumbnail?.url && isLinkvertiseUrl(resolved.thumbnail.url)) {
+    resolved.thumbnail.url = await bypassLinkvertise(resolved.thumbnail.url);
+  }
+
+  return resolved;
+}
+
+async function resolveComponentsLinkvertise(components) {
+  if (!components || components.length === 0) return [];
+
+  const resolved = [];
+  for (const row of components) {
+    const newRow = {
+      type: row.type,
+      components: [],
+    };
+    for (const btn of row.components) {
+      const newBtn = {
+        type: btn.type,
+        style: btn.style,
+        label: btn.label,
+        customId: btn.customId || btn.custom_id,
+        url: btn.url,
+        emoji: btn.emoji,
+        disabled: btn.disabled,
+      };
+
+      // Link buttons (style 5) have URLs â€” resolve Linkvertise
+      if (btn.style === 5 && btn.url && isLinkvertiseUrl(btn.url)) {
+        newBtn.url = await bypassLinkvertise(btn.url);
+      }
+
+      newRow.components.push(newBtn);
+    }
+    resolved.push(newRow);
+  }
+  return resolved;
+}
+
 // ========== Forward to bot via HTTP ==========
 async function forwardToBot(pair, msg) {
   try {
+    // Resolve Linkvertise URLs in content, embeds, and components once per message
+    const resolvedContent = await resolveLinkvertise(msg.content);
+    const resolvedEmbeds = await Promise.all(msg.embeds.map(e => resolveEmbedLinkvertise(e)));
+    const resolvedComponents = await resolveComponentsLinkvertise(msg.components);
+
     const payload = {
       sourceId: msg.id,
       sourceChannelId: msg.channelId,
       destination: pair.destination,
-      content: msg.content,
-      embeds: msg.embeds.map(e => e.toJSON ? e.toJSON() : e),
+      content: resolvedContent,
+      embeds: resolvedEmbeds,
       attachments: [...msg.attachments.values()].map(a => a.url),
-      components: msg.components.map(row => ({
-        type: row.type,
-        components: row.components.map(btn => ({
-          type: btn.type,
-          style: btn.style,
-          label: btn.label,
-          customId: btn.customId || btn.custom_id,
-          url: btn.url,
-          emoji: btn.emoji,
-          disabled: btn.disabled,
-        }))
-      })),
+      components: resolvedComponents,
     };
     const res = await axios.post(`${BOT_URL}/forward`, payload, { timeout: 15000 });
     if (res.data && res.data.destMessageId) {
-      // NEW FORMAT: store destId + destChannel so the bot can purge later
       msgMap[msg.id] = { destId: res.data.destMessageId, destChannel: pair.destination };
       saveMap(msgMap);
     }
@@ -147,7 +330,6 @@ async function backfillPair(pair) {
       await forwardToBot(pair, msg);
       lastMessages[sourceId] = msg.createdTimestamp;
       saveState(lastMessages);
-      // Small delay between backfill messages to reduce burst and memory pressure
       await new Promise(r => setTimeout(r, 200));
     }
     console.log(`[Selfbot] âœ… Backfill done for ${sourceId}`);
@@ -195,7 +377,6 @@ client.on('messageUpdate', async (oldMessage, newMessage) => {
   if (MUST && !newMessage.content.includes(MUST)) return;
   if (ANY.length && !ANY.some(v => newMessage.content.includes(v))) return;
 
-  // SAFEGUARD: if oldMessage wasn't cached, skip duplicate-check and forward anyway
   if (oldMessage && oldMessage.content === newMessage.content && JSON.stringify(oldMessage.embeds) === JSON.stringify(newMessage.embeds)) return;
 
   const entry = msgMap[newMessage.id];
@@ -203,11 +384,15 @@ client.on('messageUpdate', async (oldMessage, newMessage) => {
   if (!destMsgId) return;
 
   try {
+    // Also resolve Linkvertise on edits
+    const resolvedContent = await resolveLinkvertise(newMessage.content);
+    const resolvedEmbeds = await Promise.all(newMessage.embeds.map(e => resolveEmbedLinkvertise(e)));
+
     await axios.post(`${BOT_URL}/edit`, {
       destination: pair.destination,
       destMessageId: destMsgId,
-      content: newMessage.content,
-      embeds: newMessage.embeds.map(e => e.toJSON ? e.toJSON() : e),
+      content: resolvedContent,
+      embeds: resolvedEmbeds,
     }, { timeout: 15000 });
     console.log(`âœï¸ EDIT ${newMessage.channelId} â†’ ${pair.destination}`);
   } catch (err) {
@@ -290,7 +475,7 @@ async function clickSourceButton(sourceChId, sourceMsgId, customId) {
       client.off('messageCreate', onMessage);
       client.off('messageUpdate', onUpdate);
       clearTimeout(timeout);
-      collectedMessages.length = 0; // Free references
+      collectedMessages.length = 0;
       editedMessage = null;
     }
 
